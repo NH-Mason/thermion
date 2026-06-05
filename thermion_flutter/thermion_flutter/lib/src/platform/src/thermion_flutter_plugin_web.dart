@@ -136,8 +136,13 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin {
       (canvas as HTMLElement).style.zIndex = "-1";
     }
 
+    final backend = options.webOptions.backend ?? Backend.OPENGL;
+    if (backend == Backend.WEBGPU && !WebGpu.isSupported()) {
+      throw StateError(
+          "Backend.WEBGPU requested but navigator.gpu is not available in this browser.");
+    }
     final config = FFIFilamentConfig(
-        backend: Backend.OPENGL,
+        backend: backend,
         loadResource: loadAsset,
         platform: nullptr,
         sharedContext: null,

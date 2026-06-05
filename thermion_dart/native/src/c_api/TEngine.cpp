@@ -59,9 +59,14 @@ namespace thermion
             bool disableHandleUseAfterFreeCheck)
         {
             #ifdef __EMSCRIPTEN__
-            auto handle = Thermion_createGLContext();
-            tSharedContext = (void*)handle;
-            tPlatform = (backend::Platform *)new filament::backend::PlatformWebGL();
+            if (backend == BACKEND_WEBGPU) {
+                tPlatform = Thermion_createWebGPUPlatform();
+                tSharedContext = nullptr;
+            } else {
+                auto handle = Thermion_createGLContext();
+                tSharedContext = (void*)handle;
+                tPlatform = (backend::Platform *)new filament::backend::PlatformWebGL();
+            }
             #endif
             filament::Engine::Config config;
             config.stereoscopicEyeCount = stereoscopicEyeCount;

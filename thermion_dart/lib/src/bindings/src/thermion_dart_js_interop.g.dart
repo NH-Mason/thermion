@@ -28,6 +28,7 @@ extension type GeneratedBindings(NativeLibrary _) implements JSObject {
   external void _Thermion_destroyCanvas();
   external int _Thermion_createGLContext();
   external int _Thermion_getGLContext();
+  external Pointer<Void> _Thermion_createWebGPUPlatform();
   external Pointer<Int32> _TSWAP_CHAIN_CONFIG_TRANSPARENT;
   external Pointer<Int32> _TSWAP_CHAIN_CONFIG_READABLE;
   external Pointer<Int32> _TSWAP_CHAIN_CONFIG_APPLE_CVPIXELBUFFER;
@@ -3296,6 +3297,11 @@ int Thermion_createGLContext() {
 int Thermion_getGLContext() {
   final result = GeneratedBindings.instance._Thermion_getGLContext();
   return result;
+}
+
+Pointer<Void> Thermion_createWebGPUPlatform() {
+  final result = GeneratedBindings.instance._Thermion_createWebGPUPlatform();
+  return Pointer<Void>(result);
 }
 
 BigInt get TSWAP_CHAIN_CONFIG_TRANSPARENT {
@@ -12841,8 +12847,11 @@ sealed class TBackend {
   /// !< Selects the Metal driver if the platform supports it (default on MacOS/iOS).
   static const BACKEND_METAL = 3;
 
+  /// !< Selects the WebGPU driver if the platform supports webgpu.
+  static const BACKEND_WEBGPU = 4;
+
   /// !< Selects the no-op driver for testing purposes.
-  static const BACKEND_NOOP = 4;
+  static const BACKEND_NOOP = 5;
 }
 
 extension TEntityManagerExt on Pointer<TEntityManager> {

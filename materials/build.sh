@@ -1,6 +1,6 @@
 for material in image unlit_fixed_size grid linear_depth silhouette edge_outline wireframe translation_axis gizmo bone_overlay; do \
     echo $material
-    ${FILAMENT_PATH}/matc -a opengl -a metal -a vulkan -o materials/$material.filamat materials/$material.mat || exit 1; \
+    ${FILAMENT_PATH}/matc -a opengl -a metal -a vulkan -a webgpu -o materials/$material.filamat materials/$material.mat || exit 1; \
 	${FILAMENT_PATH}/resgen -c -p $material -x thermion_dart/native/include/material/ materials/$material.filamat || exit 1; \
     echo '#include "'$material'.h"' | cat - thermion_dart/native/include/material/$material.c > thermion_dart/native/include/material/$material.c.new; \
     mv thermion_dart/native/include/material/$material.c.new thermion_dart/native/include/material/$material.c; \
@@ -22,5 +22,5 @@ sed -i 's/GIZMO_H_/GIZMO_MATERIAL_H_/' thermion_dart/native/include/material/giz
 # Compile example asset materials (no embedded resources)
 for material in customattributes solidcolor viewspace; do \
     echo "examples/assets/$material"
-    ${FILAMENT_PATH}/matc -a opengl -a metal -a vulkan -o examples/assets/$material.filamat examples/assets/$material.mat || exit 1; \
+    ${FILAMENT_PATH}/matc -a opengl -a metal -a vulkan -a webgpu -o examples/assets/$material.filamat examples/assets/$material.mat || exit 1; \
 done

@@ -47,8 +47,13 @@ class _MyHomePageState extends State<MyHomePage> {
     super.initState();
     _sun = DirectLight.sun(direction: Vector3(0.7, -1, -0.8).normalized());
     if (kIsWeb) {
-      ThermionFlutterPlugin.instance.setOptions(const ThermionFlutterOptions(
-          webOptions: WebOptions(importCanvasAsWidget: false)));
+      final wantsWebGpu = Uri.base.queryParameters['backend'] == 'webgpu';
+      final backend = wantsWebGpu && WebGpu.isSupported()
+          ? Backend.WEBGPU
+          : Backend.OPENGL;
+      ThermionFlutterPlugin.instance.setOptions(ThermionFlutterOptions(
+          webOptions: WebOptions(
+              importCanvasAsWidget: false, backend: backend)));
     }
   }
 
