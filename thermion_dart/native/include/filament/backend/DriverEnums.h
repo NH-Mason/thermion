@@ -48,7 +48,7 @@ class ostream;
 /**
  * Types and enums used by filament's driver.
  *
- * Effectively these types are public but should not be used directly. Instead use public classes
+ * Effectively these types are public but should not be used directly. Instead, use public classes
  * internal redeclaration of these types.
  * For e.g. Use Texture::Sampler instead of filament::SamplerType.
  */
@@ -1147,6 +1147,19 @@ constexpr bool isDepthFormat(TextureFormat format) noexcept {
     }
 }
 
+//! returns whether this format a 32-bit float format
+constexpr bool isFp32ColorFormat(TextureFormat format) noexcept {
+    switch (format) {
+        case TextureFormat::R32F:
+        case TextureFormat::RG32F:
+        case TextureFormat::RGB32F:
+        case TextureFormat::RGBA32F:
+            return true;
+        default:
+            return false;
+    }
+}
+
 constexpr bool isStencilFormat(TextureFormat format) noexcept {
     switch (format) {
         case TextureFormat::STENCIL8:
@@ -1570,6 +1583,14 @@ struct RenderPassFlags {
     TargetBufferFlags discardEnd;
 };
 
+// A clear-color value for a color attachment, stored as four doubles. The actual type family
+// (float / signed-int / unsigned-int) is inferred from the attachment's TextureFormat at clear
+// time, and the doubles are converted as-is into the matching GL/Vulkan/Metal/WebGPU call.
+// The caller must put a value into this double4 that is meaningful for the attachment family --
+// e.g., for a UINT attachment, put a value in [0, UINT32_MAX]. int32/uint32 round-trip through a
+// double exactly because double has a 53-bit mantissa.
+using ClearColorValue = math::double4;
+
 /**
  * Parameters of a render pass.
  */
@@ -1579,8 +1600,11 @@ struct RenderPassParams {
     Viewport viewport{};        //!< viewport for this pass
     DepthRange depthRange{};    //!< depth range for this pass
 
-    //! Color to use to clear the COLOR buffer. RenderPassFlags::clear must be set.
-    math::float4 clearColor = {};
+    //! Value used to clear the COLOR attachments. RenderPassFlags::clear must be set.
+    //! For integer-format attachments, put a value in the matching range (e.g., values in
+    //! [0, UINT32_MAX] for a UINT attachment); the backend converts the doubles as-is into the
+    //! matching native clear entry-point based on the attachment's TextureFormat.
+    ClearColorValue clearColor{};
 
     //! Depth value to clear the depth buffer with
     double clearDepth = 0.0;

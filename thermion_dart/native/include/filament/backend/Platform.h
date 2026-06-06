@@ -217,6 +217,18 @@ public:
     };
 
     /**
+     * Types of device/driver information that can be queried from the platform.
+     */
+    enum class DeviceInfoType {
+        OPENGL_RENDERER,    //!< glGetString(GL_RENDERER)
+        OPENGL_VENDOR,      //!< glGetString(GL_VENDOR)
+        OPENGL_VERSION,     //!< glGetString(GL_VERSION)
+        VULKAN_DEVICE_NAME, //!< VkPhysicalDeviceProperties::deviceName
+        VULKAN_DRIVER_NAME, //!< VkPhysicalDeviceDriverProperties::driverName
+        VULKAN_DRIVER_INFO, //!< VkPhysicalDeviceDriverProperties::driverInfo
+    };
+
+    /**
      * This controls the priority level for GPU work scheduling, which helps prioritize the
      * submitted GPU work and enables preemption.
      */
@@ -316,7 +328,7 @@ public:
          */
         StereoscopicType stereoscopicType = StereoscopicType::NONE;
 
-        /*
+        /**
          * The number of eyes to render when stereoscopic rendering is enabled. Supported values are
          * between 1 and Engine::getMaxStereoscopicEyes() (inclusive).
          */
@@ -376,6 +388,16 @@ public:
      * @return The OS version.
      */
     virtual int getOSVersion() const noexcept = 0;
+
+    /**
+     * Queries device/driver information of the graphics API.
+     * @param infoType the type of information to query.
+     * @param driver a pointer to the current driver.
+     * @return a CString containing the requested information.
+     */
+    virtual utils::CString getDeviceInfo(DeviceInfoType infoType,
+            Driver* UTILS_NULLABLE driver) const = 0;
+
 
     /**
      * Creates and initializes the low-level API (e.g. an OpenGL context or Vulkan instance),
@@ -561,16 +583,18 @@ public:
 
     /**
      * Sets the callback function that the backend can use to update backend-specific statistics
-     * to aid with debugging. This callback is guaranteed to be called on the Filament driver
-     * thread.
+     * to aid with debugging. This callback can be called on either the Filament main thread or
+     * the Filament driver thread.
      *
      * The callback signature is (key, intValue, stringValue). Note that for any given call,
      * only one of the value parameters (intValue or stringValue) will be meaningful, depending on
      * the specific key.
      *
-     * IMPORTANT_NOTE: because the callback is called on the driver thread, only quick, non-blocking
-     * work should be done inside it. Furthermore, no graphics API calls (such as GL calls) should
-     * be made, which could interfere with Filament's driver state.
+     * IMPORTANT_NOTE: because the callback can be called on the driver thread, only quick,
+     * non-blocking work should be done inside it. Furthermore, no graphics API calls (such as GL
+     * calls) should be made, which could interfere with Filament's driver state. Lastly, the
+     * callback implementation must be synchronized (thread-safe) since it can be called from
+     * either thread.
      *
      * @param debugUpdateStat   an Invocable that updates debug statistics
      */
@@ -587,8 +611,7 @@ public:
      * with a given key. It is possible for this function to be called multiple times with the
      * same key, in which case newer values should overwrite older values.
      *
-     * This function is guaranteed to be called only on a single thread, the Filament driver
-     * thread.
+     * This function can be called on either the Filament main thread or the Filament driver thread.
      *
      * @param key           a null-terminated C-string with the key of the debug statistic
      * @param intValue      the updated integer value of key (the string value passed to the
@@ -602,8 +625,7 @@ public:
      * with a given key. It is possible for this function to be called multiple times with the
      * same key, in which case newer values should overwrite older values.
      *
-     * This function is guaranteed to be called only on a single thread, the Filament driver
-     * thread.
+     * This function can be called on either the Filament main thread or the Filament driver thread.
      *
      * @param key           a null-terminated C-string with the key of the debug statistic
      * @param stringValue   the updated string value of key (the integer value passed to the

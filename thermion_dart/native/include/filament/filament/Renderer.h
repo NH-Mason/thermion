@@ -161,10 +161,16 @@ public:
      */
     struct ClearOptions {
         /**
-         * Color (sRGB linear) to use to clear the RenderTarget (typically the SwapChain).
+         * Color to use to clear the RenderTarget (typically the SwapChain).
          *
          * The RenderTarget is cleared using this color, which won't be tone-mapped since
          * tone-mapping is part of View rendering (this is not).
+         *
+         * The value is stored as four doubles. The backend converts them as-is into the
+         * matching native clear entry-point based on the attachment's format -- so the
+         * caller is responsible for putting a value here that makes sense for the
+         * attachment family (e.g. for a UINT attachment, a value in [0, UINT32_MAX]).
+         * int32_t / uint32_t values round-trip exactly because double has a 53-bit mantissa.
          *
          * When a View is rendered, there are 3 scenarios to consider:
          * - Pixels rendered by the View replace the clear color (or blend with it in
@@ -180,7 +186,7 @@ public:
          * For consistency, it is recommended to always use a Skybox to clear an opaque View's
          * background, or to use black or fully-transparent (i.e. {0,0,0,0}) as the clear color.
          */
-        math::float4 clearColor = {};
+        math::double4 clearColor = {};
 
         /** Value to clear the stencil buffer */
         uint8_t clearStencil = 0u;
@@ -298,8 +304,10 @@ public:
      * This is a convenience method that returns the same value as beginFrame().
      *
      * @return
-     *      *false* the current frame should be skipped,
+     *      *false* the current frame should be skipped, or an unrecoverable backend exception has occurred.
      *      *true* the current frame can be rendered
+     *
+     * @note This method will return false once a backend exception has been delivered to the main thread.
      *
      * @see
      * beginFrame()
@@ -343,6 +351,10 @@ public:
      * All calls to render() must happen *after* beginFrame().
      * It is recommended to use the same swapChain for every call to beginFrame, failing to do
      * so can result is losing all or part of the FrameInfo history.
+     *
+     * @throws std::exception (or derived) if the backend thread encountered an unrecoverable error (when exceptions are enabled).
+     *
+     * @note This method will return false if called again after a backend exception was already thrown and delivered to the main thread.
      *
      * @see
      * endFrame()
@@ -413,6 +425,9 @@ public:
      *
      * @remark
      * render() is typically called once per frame (but not necessarily).
+     *
+     * @throws std::exception (or derived) if the backend thread encountered an unrecoverable error (when exceptions are enabled).
+     * @throws utils::Panic if called again after a backend exception was already thrown.
      *
      * @see
      * beginFrame(), endFrame(), View
@@ -505,6 +520,9 @@ public:
      * All calls to render() must happen *before* endFrame(). endFrame() must be called if
      * beginFrame() returned true, otherwise, endFrame() must not be called unless the caller
      * ignored beginFrame()'s return value.
+     *
+     * @throws std::exception (or derived) if the backend thread encountered an unrecoverable error (when exceptions are enabled).
+     * @throws utils::Panic if called again after a backend exception was already thrown.
      *
      * @see
      * beginFrame()
