@@ -78,8 +78,9 @@ class TestHelper {
   late Directory outDir;
   late String testDir;
   late String assetsDir;
+  final Backend? _backend;
 
-  TestHelper(String? subDir) {
+  TestHelper(String? subDir, {Backend? backend}) : _backend = backend {
     final packageUri = findPackageRoot('thermion_dart').toFilePath();
     assetsDir = p.normalize(p.join(packageUri, '..', 'examples', 'assets'));
     if (subDir != null) {
@@ -223,11 +224,11 @@ class TestHelper {
     await FFIFilamentApp.create(
         config: FFIFilamentConfig(
             loadResource: _loadResource,
-            backend: Platform.isLinux
+            backend: _backend ?? (Platform.isLinux
                 ? Backend.OPENGL
                 : Platform.isWindows
                     ? Backend.VULKAN
-                    : Backend.DEFAULT));
+                    : Backend.DEFAULT)));
   }
 
   Future<(ThermionViewer viewer, SwapChain swapChain)> createViewer(
