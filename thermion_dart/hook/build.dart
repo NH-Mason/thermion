@@ -163,8 +163,15 @@ outputDirectory : ${outputDirectory.path}
       if (targetOS != OS.android && targetOS != OS.iOS) "gltfio",
       "filament-iblprefilter",
       "image",
-      "imageio",
-      "tinyexr",
+      // imageio + tinyexr are both built against libstdc++ on Linux
+      // (build_linux.sh's cmake invocations for libs/imageio and
+      // third_party/tinyexr don't pass -stdlib=libc++), so they bring
+      // in `std::__cxx11::*` / `std::cerr` symbols. The rest of the .so
+      // uses libc++, so loading fails with undefined vtable / global
+      // refs. Skip both on Linux for now — the smoke test doesn't load
+      // EXR/PNG. TODO: rebuild Linux imageio + tinyexr with libc++.
+      if (targetOS != OS.linux) "imageio",
+      if (targetOS != OS.linux) "tinyexr",
       "filaflat",
       "dracodec",
       "ibl",
@@ -212,17 +219,16 @@ outputDirectory : ${outputDirectory.path}
     if (webgpuEnabled) {
       logger.info("Enabling native WebGPU (Dawn)");
       defines["THERMION_SUPPORTS_WEBGPU"] = "1";
-      // TODO: enumerate exact Dawn lib names from a real Filament build
-      // with FILAMENT_SUPPORTS_WEBGPU=ON. The set below is a placeholder
-      // sketch — the actual output includes a webgpu_dawn wrapper plus
-      // the Tint compiler stack split into ~15-25 granular targets.
+      // libwebgpu_dawn.a is a "monolithic" archive built by Dawn's
+      // `webgpu_dawn` target — it already includes dawn_native,
+      // dawn_proc, dawn_common, dawn_platform, dawn_wire AND the full
+      // Tint compiler stack. Linking the granular libs alongside it
+      // produces multiple-definition errors. Use the monolith alone;
+      // add abseil because it's required by webgpu_dawn but exported
+      // as a separate archive.
       libs.addAll(<String>[
-        // "webgpu_dawn",
-        // "dawn_native",
-        // "dawn_proc",
-        // "tint_api",
-        // "tint_lang_wgsl_reader",
-        // "tint_lang_msl_writer",
+        "webgpu_dawn",
+        "abseil",
       ]);
     }
 
@@ -335,6 +341,21 @@ outputDirectory : ${outputDirectory.path}
 
     if (targetOS == OS.linux) {
       flags.add("-Wl,--export-dynamic");
+      // Filament's libbackend.a is built with -fno-rtti, so classes
+      // like backend::OpenGLPlatform have no typeinfo. Compiling
+      // Thermion's subclasses (ThermionPlatformEGLHeadless etc) with
+      // RTTI on creates vtables that reference the missing typeinfo
+      // symbol and the resulting .so fails to load. Match Filament's
+      // flag to keep vtables minimal.
+      flags.add("-fno-rtti");
+      // Dawn's webgpu_dawn monolithic archive bundles its own copy of
+      // SPIRV-Tools, which collides at link time with the SPIRV-Tools
+      // objects that Filament's filamat bundles. Let the linker pick
+      // one — both copies are compatible for symbol resolution and we
+      // don't care which gets exported. Only enable when webgpu is on.
+      if (webgpuEnabled) {
+        flags.add("-Wl,--allow-multiple-definition");
+      }
     }
 
     frameworks = frameworks.expand((f) => ["-framework", f]).toList();
@@ -544,27 +565,30 @@ outputDirectory : ${outputDirectory.path}
   });
 }
 
-String _getFilamentVersion() {
-  final versionFile = File(
-    path.join(
-      path.dirname(
-        path.dirname(Platform.script.toFilePath(windows: Platform.isWindows)),
-      ),
-      'filament.version',
-    ),
-  );
-  if (versionFile.existsSync()) {
-    final parts = versionFile.readAsStringSync().trim().split(RegExp(r'\s+'));
-    // Format: "<repo> <version>" - return the version (second field)
-    return parts.length >= 2 ? parts[1] : parts[0];
+String _readFilamentVersion(Uri packageRoot) {
+  // filament.version lives at the monorepo root, NOT the package root.
+  // Walk up from packageRoot looking for it. Platform.script can't be
+  // used here — at hook-runtime it points into .dart_tool/hooks_runner/.
+  var dir = Directory(packageRoot.toFilePath(windows: Platform.isWindows));
+  while (true) {
+    final candidate = File(path.join(dir.path, 'filament.version'));
+    if (candidate.existsSync()) {
+      final parts = candidate.readAsStringSync().trim().split(RegExp(r'\s+'));
+      // Format: "<repo> <version>" — return the second field.
+      return parts.length >= 2 ? parts[1] : parts[0];
+    }
+    final parent = dir.parent;
+    if (parent.path == dir.path) {
+      throw StateError(
+        'filament.version not found at or above ${packageRoot.toFilePath()}',
+      );
+    }
+    dir = parent;
   }
-  // Fallback to hardcoded version if file doesn't exist
-  return "v1.69.1";
 }
 
-String _FILAMENT_VERSION = _getFilamentVersion();
-String _getLibraryUrl(String platform, String mode) {
-  return "https://pub-c8b6266320924116aaddce03b5313c0a.r2.dev/filament-${_FILAMENT_VERSION}-${platform}-${mode}.zip";
+String _getLibraryUrl(String version, String platform, String mode) {
+  return "https://pub-c8b6266320924116aaddce03b5313c0a.r2.dev/filament-${version}-${platform}-${mode}.zip";
 }
 
 //
@@ -588,13 +612,15 @@ Future<Directory> getLibDir(
 
   var mode = buildMode == BuildMode.debug ? "debug" : "release";
 
+  final filamentVersion = _readFilamentVersion(packageRoot);
+
   var libDir = Directory(
     path.join(
       packageRoot.toFilePath(windows: Platform.isWindows),
       ".dart_tool",
       "thermion_dart",
       "lib",
-      _FILAMENT_VERSION,
+      filamentVersion,
       platform,
       mode,
     ),
@@ -617,7 +643,7 @@ Future<Directory> getLibDir(
 
   logger.info("Searching for Filament libraries under ${libDir.path}");
 
-  var url = _getLibraryUrl(platform, mode);
+  var url = _getLibraryUrl(filamentVersion, platform, mode);
 
   final filename = url.split("/").last;
 
