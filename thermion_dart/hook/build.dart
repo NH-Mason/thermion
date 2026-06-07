@@ -63,6 +63,15 @@ outputDirectory : ${outputDirectory.path}
 
     logger.info("Building Thermion for ${targetOS} in mode ${buildMode.name}");
 
+    // Detect webgpu early — it affects which R2 artifact we download
+    // (the webgpu build is published under a -webgpu suffix) and which
+    // static libs we link.
+    final webgpuRaw = input.userDefines["webgpu"];
+    final webgpuEnabled = webgpuRaw == true ||
+        webgpuRaw == "true" ||
+        webgpuRaw == 1 ||
+        webgpuRaw == "1";
+
     final isIOSSimulator =
         targetOS == OS.iOS &&
         config.code.iOS.targetSdk == IOSSdk.iPhoneSimulator;
@@ -74,6 +83,7 @@ outputDirectory : ${outputDirectory.path}
       logger,
       buildMode,
       isIOSSimulator: isIOSSimulator,
+      webgpuEnabled: webgpuEnabled,
     )).path;
 
     var sources = Directory(path.join(pkgRootFilePath, "native", "src"))
@@ -163,13 +173,12 @@ outputDirectory : ${outputDirectory.path}
       if (targetOS != OS.android && targetOS != OS.iOS) "gltfio",
       "filament-iblprefilter",
       "image",
-      // imageio + tinyexr are both built against libstdc++ on Linux
-      // (build_linux.sh's cmake invocations for libs/imageio and
-      // third_party/tinyexr don't pass -stdlib=libc++), so they bring
-      // in `std::__cxx11::*` / `std::cerr` symbols. The rest of the .so
-      // uses libc++, so loading fails with undefined vtable / global
-      // refs. Skip both on Linux for now — the smoke test doesn't load
-      // EXR/PNG. TODO: rebuild Linux imageio + tinyexr with libc++.
+      // imageio + tinyexr: on Linux, the currently-published R2 artifacts
+      // were built without -stdlib=libc++, so they pull in libstdc++ symbols
+      // (std::__cxx11::* / std::cerr) that clash with the libc++ used by
+      // everything else in the .so.  The build script has been fixed to
+      // pass -stdlib=libc++ — once the next CI build uploads new artifacts
+      // these exclusions can be removed.
       if (targetOS != OS.linux) "imageio",
       if (targetOS != OS.linux) "tinyexr",
       "filaflat",
@@ -211,11 +220,6 @@ outputDirectory : ${outputDirectory.path}
     // with the regular filament libs in libDir. Intended for local
     // testing only — shipping native builds should continue to use
     // Metal/Vulkan/OpenGL.
-    final webgpuRaw = input.userDefines["webgpu"];
-    final webgpuEnabled = webgpuRaw == true ||
-        webgpuRaw == "true" ||
-        webgpuRaw == 1 ||
-        webgpuRaw == "1";
     if (webgpuEnabled) {
       logger.info("Enabling native WebGPU (Dawn)");
       defines["THERMION_SUPPORTS_WEBGPU"] = "1";
@@ -587,8 +591,9 @@ String _readFilamentVersion(Uri packageRoot) {
   }
 }
 
-String _getLibraryUrl(String version, String platform, String mode) {
-  return "https://pub-c8b6266320924116aaddce03b5313c0a.r2.dev/filament-${version}-${platform}-${mode}.zip";
+String _getLibraryUrl(String version, String platform, String mode, {bool webgpu = false}) {
+  final suffix = webgpu ? "-webgpu" : "";
+  return "https://pub-c8b6266320924116aaddce03b5313c0a.r2.dev/filament-${version}-${platform}-${mode}${suffix}.zip";
 }
 
 //
@@ -601,6 +606,7 @@ Future<Directory> getLibDir(
   Logger logger,
   BuildMode buildMode, {
   bool isIOSSimulator = false,
+  bool webgpuEnabled = false,
 }) async {
   var platform = targetOS.toString().toLowerCase();
 
@@ -643,7 +649,7 @@ Future<Directory> getLibDir(
 
   logger.info("Searching for Filament libraries under ${libDir.path}");
 
-  var url = _getLibraryUrl(filamentVersion, platform, mode);
+  var url = _getLibraryUrl(filamentVersion, platform, mode, webgpu: webgpuEnabled);
 
   final filename = url.split("/").last;
 
