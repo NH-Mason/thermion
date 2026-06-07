@@ -26,8 +26,8 @@
 #include <utils/Entity.h>
 #include <utils/FixedCapacityVector.h>
 
-#include <math/mathfwd.h>
 #include <math/mat4.h>
+#include <math/mathfwd.h>
 
 #include <utility>
 
@@ -119,7 +119,8 @@ public:
      *
      * @note
      *  There is no reference-counting.
-     *  Make sure to dissociate a Scene from all Views before destroying it.
+     *  If a Scene is destroyed before it is dissociated from a View, it will be automatically
+     *  dissociated from that View (setting the View's Scene to nullptr).
      */
     void setScene(Scene* UTILS_NULLABLE scene);
 
