@@ -4,3 +4,6 @@ pubspec.lock
 test/output/*
 test/generated/libThermionTextureSwift.dylib
 **/*.g.dart
+# Assembly/bin material files are unused (build hook uses .c files)
+native/include/material/*.S
+native/include/material/*.bin
