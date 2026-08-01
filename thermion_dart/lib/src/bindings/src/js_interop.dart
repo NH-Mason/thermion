@@ -191,14 +191,23 @@ Future<bool> withBoolCallback(
 
   final onComplete_interopFnPtr = callback.addFunction();
 
-  func.call(onComplete_interopFnPtr.cast());
+  try {
+    func.call(onComplete_interopFnPtr.cast());
 
-  while (!completer.isCompleted) {
-    _NativeLibrary.instance._execute_queue();
-    await Future.delayed(Duration(milliseconds: 1));
+    while (!completer.isCompleted) {
+      _NativeLibrary.instance._execute_queue();
+      await Future.delayed(Duration(milliseconds: 1));
+    }
+
+    return await completer.future;
+  } finally {
+    // `addFunction` installs a wrapper in the WASM function table; without a
+    // matching `removeFunction` every awaited call permanently consumes a
+    // table slot (and its JS trampoline). `withPointerCallback` already does
+    // this; the bool/float/int variants did not, which leaks once per
+    // `Texture.setImage`, per material-parameter write, etc.
+    onComplete_interopFnPtr.dispose();
   }
-
-  return completer.future;
 }
 
 Future<double> withFloatCallback(
@@ -210,12 +219,16 @@ Future<double> withFloatCallback(
     completer.complete(result);
   };
   var ptr = callback.addFunction();
-  func.call(ptr);
-  while (!completer.isCompleted) {
-    _NativeLibrary.instance._execute_queue();
-    await Future.delayed(Duration(milliseconds: 1));
+  try {
+    func.call(ptr);
+    while (!completer.isCompleted) {
+      _NativeLibrary.instance._execute_queue();
+      await Future.delayed(Duration(milliseconds: 1));
+    }
+    return await completer.future;
+  } finally {
+    ptr.dispose();
   }
-  return completer.future;
 }
 
 Future<int> withIntCallback(
@@ -227,12 +240,16 @@ Future<int> withIntCallback(
     completer.complete(result);
   };
   var ptr = callback.addFunction();
-  func.call(ptr);
-  while (!completer.isCompleted) {
-    _NativeLibrary.instance._execute_queue();
-    await Future.delayed(Duration(milliseconds: 1));
+  try {
+    func.call(ptr);
+    while (!completer.isCompleted) {
+      _NativeLibrary.instance._execute_queue();
+      await Future.delayed(Duration(milliseconds: 1));
+    }
+    return await completer.future;
+  } finally {
+    ptr.dispose();
   }
-  return completer.future;
 }
 
 Pointer<T> allocate<T extends NativeType>(int count) {
@@ -255,9 +272,12 @@ Future<int> withUInt32Callback(
     completer.complete(result);
   };
   final ptr = callback.addFunction();
-  func.call(ptr.cast());
-  await completer.future;
-  return completer.future;
+  try {
+    func.call(ptr.cast());
+    return await completer.future;
+  } finally {
+    ptr.dispose();
+  }
 }
 
 Future<String> withCharPtrCallback(
