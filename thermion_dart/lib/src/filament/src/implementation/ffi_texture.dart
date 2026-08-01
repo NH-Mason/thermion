@@ -101,24 +101,20 @@ class FFITexture extends Texture<Pointer<TRenderTarget>> {
     int yOffset = 0,
     int zOffset = 0,
   }) async {
-    final success = await withBoolCallback((cb) {
-      Texture_setImageRenderThread(
-        _engine,
-        pointer,
-        level,
-        buffer.address,
-        buffer.lengthInBytes,
-        xOffset,
-        yOffset,
-        zOffset,
-        width,
-        height,
-        depth,
-        format.index,
-        type.index,
-        cb,
-      );
-    });
+    final success = await Texture_setImageFromBuffer(
+      _engine,
+      pointer,
+      level,
+      buffer,
+      xOffset,
+      yOffset,
+      zOffset,
+      width,
+      height,
+      depth,
+      format.index,
+      type.index,
+    );
 
     if (!success) {
       throw Exception("Failed to set image");
