@@ -12,6 +12,19 @@ void main(List<String> args) async {
     var pkgRootFilePath = packageRoot.toFilePath(windows: Platform.isWindows);
     final logger = createBuildLogger(pkgRootFilePath, "link.log");
 
+    // Web builds produce no code assets — `hook/build.dart` detects the same
+    // condition and downloads the prebuilt WASM instead of compiling anything.
+    // There is nothing to link, and reading `input.config.code` here would
+    // throw before we ever got that far: `CodeConfig._fromJson` null-check
+    // asserts when the hook input carries no code config, which fails the
+    // whole `link_hooks` target with an opaque
+    // "Null check operator used on a null value". This guard must therefore
+    // come before the first `input.config.code` access below.
+    if (!input.config.buildCodeAssets) {
+      logger.info("buildCodeAssets is false (web build); nothing to link.");
+      return;
+    }
+
     // The CLinker.library(... LinkerOptions.manual(...)) call below
     // delegates to native_toolchain_c.runCl on Windows, which builds a
     // cl.exe command line from the constructor's `sources` list. Our
