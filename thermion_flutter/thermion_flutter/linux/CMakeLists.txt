@@ -77,11 +77,19 @@ if(_PKG_CONFIG)
       endforeach()
 
       if(_td_rootUri)
-        # rootUri may be a file:/// URI (e.g. file:///D:/path on Windows,
-        # file:///home on Linux) or a relative path like "../../thermion_dart".
-        # Strip file:/// (3 slashes) first, then file:// (2 slashes) as fallback.
-        string(REGEX REPLACE "^file:///" "" _td_root "${_td_rootUri}")
-        string(REGEX REPLACE "^file://" "" _td_root "${_td_root}")
+        # rootUri may be a file:// URI (file:///D:/path on Windows,
+        # file:///home/... on POSIX) or a relative path like
+        # "../../thermion_dart".
+        #
+        # Strip only the "file://" authority: on POSIX the THIRD slash is the
+        # filesystem root and must survive (stripping "file:///" turns
+        # /home/... into a RELATIVE "home/...", which then gets joined onto
+        # the .dart_tool directory and silently resolves to a path that does
+        # not exist — the include dirs come out wrong and the plugin fails to
+        # find its headers). On Windows the remaining leading slash before a
+        # drive letter ("/D:/path") is dropped separately.
+        string(REGEX REPLACE "^file://" "" _td_root "${_td_rootUri}")
+        string(REGEX REPLACE "^/([A-Za-z]:)" "\\1" _td_root "${_td_root}")
         if(NOT IS_ABSOLUTE "${_td_root}")
           get_filename_component(_pkg_dir "${_PKG_CONFIG}" DIRECTORY)
           get_filename_component(_td_root "${_pkg_dir}/${_td_root}" ABSOLUTE)
