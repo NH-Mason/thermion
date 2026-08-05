@@ -1794,16 +1794,20 @@ external ffi.Pointer<TTexture> Ktx1Reader_createTexture(
 );
 
 @ffi.Native<
-  ffi.Pointer<TTexture> Function(
+  ffi.Pointer<TKtx2LoadResult> Function(
     ffi.Pointer<TEngine>,
     ffi.Pointer<ffi.Uint8>,
     ffi.Size,
+    ffi.Int32,
+    ffi.Int32,
   )
 >(isLeaf: true)
-external ffi.Pointer<TTexture> Ktx2Reader_createTexture(
+external ffi.Pointer<TKtx2LoadResult> Ktx2Reader_createTexture(
   ffi.Pointer<TEngine> tEngine,
   ffi.Pointer<ffi.Uint8> data,
   int size,
+  int transferFunction,
+  int maxMipLevels,
 );
 
 @ffi.Native<
@@ -3131,16 +3135,62 @@ external void Ktx1Reader_createTextureRenderThread(
     ffi.Pointer<TEngine>,
     ffi.Pointer<ffi.Uint8>,
     ffi.Size,
-    ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TTexture>)>>,
+    ffi.Int32,
+    ffi.Int32,
+    ffi.Pointer<
+      ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>
+    >,
   )
 >(isLeaf: true)
 external void Ktx2Reader_createTextureRenderThread(
   ffi.Pointer<TEngine> tEngine,
   ffi.Pointer<ffi.Uint8> data,
   int size,
-  ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TTexture>)>>
+  int transferFunction,
+  int maxMipLevels,
+  ffi.Pointer<
+    ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>
+  >
   onComplete,
 );
+
+@ffi.Native<ffi.Pointer<TTexture> Function(ffi.Pointer<TKtx2LoadResult>)>(
+  isLeaf: true,
+)
+external ffi.Pointer<TTexture> Ktx2LoadResult_getTexture(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceTransfer(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getResolvedFormat(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getHardwareSrgbDecode(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getAlphaMode(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getUploadedMipCount(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceMipCount(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external void Ktx2LoadResult_destroy(ffi.Pointer<TKtx2LoadResult> tResult);
 
 @ffi.Native<
   ffi.Void Function(
@@ -7073,6 +7123,8 @@ final class TFilamentAsset extends ffi.Opaque {}
 final class TColorGrading extends ffi.Opaque {}
 
 final class TKtx1Bundle extends ffi.Opaque {}
+
+final class TKtx2LoadResult extends ffi.Opaque {}
 
 final class TDebugRegistry extends ffi.Opaque {}
 
