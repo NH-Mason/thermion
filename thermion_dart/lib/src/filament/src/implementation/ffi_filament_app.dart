@@ -1931,6 +1931,7 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
         ),
         uploadedMipCount: Ktx2LoadResult_getUploadedMipCount(resultPtr),
         sourceMipCount: Ktx2LoadResult_getSourceMipCount(resultPtr),
+        sourceChannelCount: Ktx2LoadResult_getSourceChannelCount(resultPtr),
       );
 
       if (expectTransfer != null && expectTransfer != result.sourceTransfer) {

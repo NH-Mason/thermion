@@ -642,6 +642,14 @@ class Ktx2LoadResult {
   /// when the load clamped the chain.
   final int sourceMipCount;
 
+  /// Channels the source payload carries (1, 2, 3 or 4) per its DFD channel id,
+  /// or 0 when unknown.
+  ///
+  /// This gates which linear internal formats the loader is even allowed to
+  /// offer, so a three-channel source can never resolve to a one-channel format
+  /// and silently lose G and B.
+  final int sourceChannelCount;
+
   const Ktx2LoadResult({
     required this.texture,
     required this.sourceTransfer,
@@ -650,6 +658,7 @@ class Ktx2LoadResult {
     required this.alphaMode,
     required this.uploadedMipCount,
     required this.sourceMipCount,
+    required this.sourceChannelCount,
   });
 
   bool get isLoaded => texture != null;
@@ -661,5 +670,6 @@ class Ktx2LoadResult {
       'resolvedFormat: ${resolvedFormat?.name}, '
       'hardwareSrgbDecode: $hardwareSrgbDecode, '
       'alphaMode: ${alphaMode.name}, '
+      'sourceChannelCount: $sourceChannelCount, '
       'mips: $uploadedMipCount/$sourceMipCount)';
 }

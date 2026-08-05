@@ -3189,6 +3189,11 @@ external int Ktx2LoadResult_getSourceMipCount(
   ffi.Pointer<TKtx2LoadResult> tResult,
 );
 
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceChannelCount(
+  ffi.Pointer<TKtx2LoadResult> tResult,
+);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
 external void Ktx2LoadResult_destroy(ffi.Pointer<TKtx2LoadResult> tResult);
 

@@ -1450,6 +1450,9 @@ extension type GeneratedBindings(NativeLibrary _) implements JSObject {
   external int _Ktx2LoadResult_getSourceMipCount(
     Pointer<TKtx2LoadResult> tResult,
   );
+  external int _Ktx2LoadResult_getSourceChannelCount(
+    Pointer<TKtx2LoadResult> tResult,
+  );
   external void _Ktx2LoadResult_destroy(Pointer<TKtx2LoadResult> tResult);
   external void _Engine_destroyTextureRenderThread(
     Pointer<TEngine> engine,
@@ -7013,6 +7016,12 @@ int Ktx2LoadResult_getSourceMipCount(Pointer<TKtx2LoadResult> tResult) {
   final result = GeneratedBindings.instance._Ktx2LoadResult_getSourceMipCount(
     tResult.cast(),
   );
+  return result;
+}
+
+int Ktx2LoadResult_getSourceChannelCount(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance
+      ._Ktx2LoadResult_getSourceChannelCount(tResult.cast());
   return result;
 }
 
