@@ -60,25 +60,80 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
   }
 
   static void _tick(JSNumber timestamp) {
-    if (_stackPtr != null) {
-      js.NativeLibrary.instance.stackRestore(_stackPtr!);
+    if (_rendererUnavailable) {
+      return;
     }
-
-    _stackPtr = js.NativeLibrary.instance.stackSave();
-
-    final app = FilamentApp.instance;
-    final targetFps = app is FFIFilamentApp ? app.targetFramerate : 0;
-    final rendered = _shouldRender(timestamp.toDartDouble, targetFps);
-    if (rendered) {
-      app?.render();
-
-      // RenderManager still executes its backend task queue while paused, but
-      // it does not produce a new frame, so do not notify Flutter of one.
-      if (!_renderPaused) {
-        _textureDescriptorRegistry.markFrameAvailable();
+    try {
+      if (_stackPtr != null) {
+        js.NativeLibrary.instance.stackRestore(_stackPtr!);
       }
+
+      _stackPtr = js.NativeLibrary.instance.stackSave();
+
+      final app = FilamentApp.instance;
+      final targetFps = app is FFIFilamentApp ? app.targetFramerate : 0;
+      final rendered = _shouldRender(timestamp.toDartDouble, targetFps);
+      if (rendered) {
+        app?.render();
+
+        // RenderManager still executes its backend task queue while paused,
+        // but it does not produce a new frame, so do not notify Flutter of
+        // one.
+        if (!_renderPaused) {
+          _textureDescriptorRegistry.markFrameAvailable();
+        }
+      }
+    } catch (err) {
+      // Once the wasm runtime has aborted (e.g. the render worker died),
+      // every interop call throws. Stop the loop and surface the death
+      // instead of flooding the console once per rAF.
+      _reportRendererUnavailable('render tick failed: $err');
+      return;
     }
     _frameRequestId = window.requestAnimationFrame(_tick.toJS);
+  }
+
+  /// True once the wasm runtime / render worker is known dead. Latched until
+  /// [_resetWebState] (i.e. a full engine teardown + reinitialize).
+  static bool _rendererUnavailable = false;
+
+  static final _rendererUnavailableController =
+      StreamController<String>.broadcast();
+
+  /// Fires (at most once per engine lifetime) when the web renderer becomes
+  /// permanently unavailable — the wasm module aborted (worker OOM/crash) or
+  /// interop calls started throwing. Consumers should tear down / fall back;
+  /// no further frames will be produced.
+  static Stream<String> get onRendererUnavailable =>
+      _rendererUnavailableController.stream;
+
+  static void _reportRendererUnavailable(String reason) {
+    if (_rendererUnavailable) return;
+    _rendererUnavailable = true;
+    _logger.severe('Thermion web renderer unavailable: $reason');
+    if (_frameRequestId != null) {
+      window.cancelAnimationFrame(_frameRequestId!);
+      _frameRequestId = null;
+    }
+    _rendererUnavailableController.add(reason);
+  }
+
+  /// Emscripten calls `Module.onAbort` when the runtime aborts — including
+  /// aborts originating on the render pthread (e.g. OOM), which are
+  /// re-raised on the main thread. This is the earliest reliable signal
+  /// that the render worker is gone.
+  static void _installAbortHook() {
+    final module = globalContext.getProperty('thermion_dart'.toJS);
+    if (module == null || module.isUndefinedOrNull) {
+      _logger.warning('thermion_dart module not found; abort hook not set');
+      return;
+    }
+    (module as JSObject).setProperty(
+      'onAbort'.toJS,
+      ((JSAny? what) {
+        _reportRendererUnavailable('wasm module aborted: $what');
+      }).toJS,
+    );
   }
 
   static bool _shouldRender(double timestampMs, int targetFps) {
@@ -127,10 +182,18 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
 
     _stackPtr = null;
     swapChain = null;
+    _canvasElement = null;
+    _rendererUnavailable = false;
     _textureDescriptorRegistry.clear();
   }
 
   static SwapChain? swapChain;
+
+  /// The engine's canvas element. Kept as a direct reference because the
+  /// platform-view widget reparents it out of / back into `document.body`,
+  /// and `getElementById` cannot find a detached element.
+  static HTMLCanvasElement? _canvasElement;
+  static HTMLCanvasElement? get canvasElement => _canvasElement;
 
   /// Serialises concurrent [initialize] calls — same race as the native
   /// plugin: batch-mounting viewers run `createViewer` concurrently, each
@@ -209,6 +272,7 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
       throw Exception("Could not locate or create canvas");
     }
     canvas.id = "thermion_canvas";
+    _canvasElement = canvas;
     // canvas.style.display = "none";
     document.body!.appendChild(canvas);
 
@@ -231,12 +295,18 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
       _resetWebState();
     });
 
-    // Use createSwapChain with nullptr to render to the canvas's default
-    // framebuffer (framebuffer 0). createHeadlessSwapChain creates an offscreen
-    // buffer that never gets displayed.
-    swapChain = await FilamentApp.instance!.createHeadlessSwapChain(1, 1);
+    _installAbortHook();
 
-    _logger.info("Created 1x1 headless swapchain");
+    // Render to the canvas's default framebuffer (framebuffer 0): a
+    // null-window swapchain routes Filament's default render target to fb 0
+    // of the context created on #thermion_canvas, and the browser presents
+    // the OffscreenCanvas to the placeholder element every time the render
+    // worker's rAF task completes. The previous 1x1 headless swapchain
+    // rendered offscreen and never reached the visible canvas (2026-08-12
+    // smoke: lane active, canvas permanently blank).
+    swapChain = await FilamentApp.instance!.createSwapChain(nullptr);
+
+    _logger.info("Created canvas-backed (fb 0) swapchain");
 
     _ensureFrameLoopRunning();
     WidgetsBinding.instance.addObserver(this);

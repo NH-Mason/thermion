@@ -1,239 +1,90 @@
-// import 'dart:async';
-// import 'dart:ui' as ui;
-// import 'dart:ui_web' as ui_web;
-// import 'package:flutter/material.dart' hide View;
-// import 'package:logging/logging.dart';
-// import 'package:thermion_flutter/thermion_flutter.dart' hide BlendMode;
-// import 'package:web/web.dart' as web;
-// import '../../../platform/platform.dart';
-// import '../../../platform/src/platform_texture_descriptor.dart';
-// import '../../../platform/src/web_platform_texture_descriptor.dart';
+import 'package:flutter/material.dart' hide View;
+import 'dart:ui_web' as ui_web;
+import 'package:web/web.dart' as web;
 
-//   @override
-//   Widget build(BuildContext context) {
-//     return SizedBox.expand(child: CustomPaint(painter: TransparencyPainter()));
-//     return ThermionFlutterPlugin
-//             .instance.options.webOptions.importCanvasAsWidget
-//         ? _ImageCopyingWidget(
-//             view: widget.view,
-//             onTextureUpdated: widget.onTextureUpdated,
-//           )
-//         : SizedBox.expand(child: CustomPaint(painter: TransparencyPainter()));
-//   }
-// }
+import '../../../platform/src/thermion_flutter_plugin_web.dart';
 
-// class TransparencyPainter extends CustomPainter {
-//   @override
-//   void paint(Canvas canvas, Size size) {
-//     canvas.drawRect(
-//       Rect.fromLTWH(0, 0, size.width, size.height),
-//       Paint()
-//         ..blendMode = BlendMode.clear
-//         ..color = const Color(0x00000000),
-//     );
-//   }
+/// Composites the engine's `#thermion_canvas` into the Flutter widget tree as
+/// an HTML platform view.
+///
+/// The canvas element is created (and transferred to the render pthread) by
+/// [ThermionFlutterPluginImpl.initialize] long before any widget mounts, so
+/// this widget does not create a canvas — it *adopts* the existing placeholder
+/// element into the platform-view slot, and re-parks it back onto
+/// `document.body` (hidden behind the page) when the widget is disposed. The
+/// OffscreenCanvas link survives reparenting, so presented frames keep
+/// flowing to wherever the placeholder element currently lives.
+///
+/// One engine canvas exists per page, so at most one [ThermionCanvasView]
+/// can be mounted at a time; a second concurrent mount would steal the
+/// canvas from the first slot.
+class ThermionCanvasView extends StatefulWidget {
+  const ThermionCanvasView({super.key});
 
-//   @override
-//   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-// }
+  @override
+  State<ThermionCanvasView> createState() => _ThermionCanvasViewState();
+}
 
-// class _PlatformView extends StatefulWidget {
-//   final ThermionViewer viewer;
+class _ThermionCanvasViewState extends State<ThermionCanvasView> {
+  static const _viewType = 'thermion-canvas';
+  static bool _factoryRegistered = false;
 
-//   const _PlatformView({super.key, required this.viewer});
-//   @override
-//   State<StatefulWidget> createState() => _PlatformViewState();
-// }
+  @override
+  void initState() {
+    super.initState();
+    if (!_factoryRegistered) {
+      ui_web.platformViewRegistry.registerViewFactory(_viewType, (int _) {
+        final canvas = _resolveCanvas();
+        if (canvas == null) {
+          // The engine has not been initialized yet — nothing to show.
+          // The slot gets an inert element; the next mount (after
+          // initialize) adopts the real canvas.
+          return web.document.createElement('div');
+        }
+        _adopt(canvas);
+        return canvas;
+      });
+      _factoryRegistered = true;
+    }
+  }
 
-// class _PlatformViewState extends State<_PlatformView> {
-//   @override
-//   void initState() {
-//     super.initState();
-//     ui_web.platformViewRegistry.registerViewFactory(
-//       'imported-canvas',
-//       (int viewId, {Object? params}) {
-//         var canvas = web.document.getElementById("thermion_canvas");
-//         return canvas! as Object;
-//       },
-//     );
-//   }
+  static web.HTMLCanvasElement? _resolveCanvas() =>
+      ThermionFlutterPluginImpl.canvasElement ??
+      web.document.getElementById('thermion_canvas')
+          as web.HTMLCanvasElement?;
 
-//   @override
-//   Widget build(BuildContext context) {
-//     return HtmlElementView(
-//       viewType: 'imported-canvas',
-//       onPlatformViewCreated: (i) {},
-//       creationParams: <String, Object?>{
-//         'key': 'someValue',
-//       },
-//     );
-//   }
-// }
+  /// Clear the parked-behind-the-page placement; inside the platform-view
+  /// slot the canvas is positioned by the slot itself. The plugin keeps
+  /// owning the CSS pixel dimensions (logical px, backing store = physical
+  /// px), which always match the widget bounds that produced them.
+  static void _adopt(web.HTMLCanvasElement canvas) {
+    canvas.style
+      ..position = ''
+      ..zIndex = ''
+      ..display = 'block';
+  }
 
-// class _ImageCopyingWidget extends StatefulWidget {
-//   final View view;
-//   final void Function(PlatformTextureDescriptor? descriptor)? onTextureUpdated;
+  /// Return the canvas to its hidden parking spot so `getElementById`
+  /// keeps finding it and the engine can keep presenting into a live
+  /// element between widget mounts.
+  static void _park(web.HTMLCanvasElement canvas) {
+    canvas.style
+      ..position = 'fixed'
+      ..zIndex = '-1';
+    web.document.body?.appendChild(canvas);
+  }
 
-//   const _ImageCopyingWidget({
-//     super.key,
-//     required this.view,
-//     this.onTextureUpdated,
-//   });
-//   @override
-//   State<StatefulWidget> createState() {
-//     return _ImageCopyingWidgetState();
-//   }
-// }
+  @override
+  void dispose() {
+    final canvas = _resolveCanvas();
+    if (canvas != null) {
+      _park(canvas);
+    }
+    super.dispose();
+  }
 
-// class _ImageCopyingWidgetState extends State<_ImageCopyingWidget> {
-//   static const _debounceDuration = Duration(milliseconds: 100);
-
-//   late final _logger = Logger(runtimeType.toString());
-//   late web.HTMLCanvasElement canvas;
-//   ui.Image? _img;
-//   double width = 0;
-//   double height = 0;
-
-//   // Track current and pending dimensions for debouncing
-//   int _currentWidth = 0;
-//   int _currentHeight = 0;
-//   int? _pendingWidth;
-//   int? _pendingHeight;
-//   Timer? _debounceTimer;
-
-//   @override
-//   void initState() {
-//     super.initState();
-//     canvas =
-//         web.document.getElementById("thermion_canvas") as web.HTMLCanvasElement;
-//     WidgetsBinding.instance.addPostFrameCallback((t) {
-//       _refresh(Duration.zero);
-//     });
-//   }
-
-//   @override
-//   void dispose() {
-//     _debounceTimer?.cancel();
-//     super.dispose();
-//   }
-
-//   void _refresh(Duration _) async {
-//     try {
-//       final rb = context.findRenderObject() as RenderBox?;
-
-//       if (rb == null) {
-//         setState(() {});
-//         return;
-//       }
-
-//       if (rb.size.isEmpty) {
-//         setState(() {});
-//         return;
-//       }
-
-//       // Calculate desired dimensions based on widget size and DPR
-//       final dpr = web.window.devicePixelRatio;
-//       final desiredWidth = (rb.size.width * dpr).ceil();
-//       final desiredHeight = (rb.size.height * dpr).ceil();
-
-//       // Check if canvas size needs updating
-//       if (canvas.width != desiredWidth || canvas.height != desiredHeight) {
-//         _scheduleResize(desiredWidth, desiredHeight);
-//       }
-
-//       width = canvas.width * dpr;
-//       height = canvas.height * dpr;
-//       _img = await ui_web.createImageFromTextureSource(canvas,
-//           width: width.ceil(), height: height.ceil(), transferOwnership: true);
-
-//       _request++;
-//     } catch (err) {
-//       _logger.severe(err);
-//     } finally {
-//       WidgetsBinding.instance.addPostFrameCallback((_) {
-//         setState(() {});
-//       });
-//       WidgetsBinding.instance.scheduleFrameCallback(_refresh);
-//     }
-//   }
-
-//   int _request = 0;
-
-//   void _scheduleResize(int width, int height) {
-//     _pendingWidth = width;
-//     _pendingHeight = height;
-
-//     _debounceTimer?.cancel();
-//     _debounceTimer = Timer(_debounceDuration, () {
-//       if (_pendingWidth != null && _pendingHeight != null) {
-//         _performResize(_pendingWidth!, _pendingHeight!);
-//       }
-//     });
-//   }
-
-//   void _performResize(int width, int height) async {
-//     if (_currentWidth == width && _currentHeight == height) {
-//       return;
-//     }
-
-//     _logger.info("Resizing canvas to ${width}x$height");
-
-//     try {
-//       final plugin =
-//           ThermionFlutterPlugin.instance as ThermionFlutterPluginImpl;
-//       plugin.resizeCanvas(width / web.window.devicePixelRatio,
-//           height / web.window.devicePixelRatio);
-
-//       await widget.view
-//           .setViewport(width, height)
-//           .timeout(Duration(seconds: 1));
-
-//       _currentWidth = width;
-//       _currentHeight = height;
-
-//       // Invoke callback with dimensions
-//       if (widget.onTextureUpdated != null) {
-//         final descriptor = WebPlatformTextureDescriptor(
-//           width: width,
-//           height: height,
-//         );
-//         widget.onTextureUpdated!(descriptor);
-//       }
-//     } catch (err) {
-//       _logger.severe("Failed to resize: $err");
-//     }
-//   }
-
-//   @override
-//   Widget build(BuildContext context) {
-//     if (_img == null) {
-//       return Container();
-//     }
-
-//     return RawImage(
-//       key: Key(_request.toString()),
-//       width: width,
-//       height: height,
-//       image: _img!,
-//       filterQuality: FilterQuality.high,
-//       isAntiAlias: false,
-//     );
-//   }
-// }
-
-// import 'package:flutter/material.dart';
-
-// class TransparencyPainter extends CustomPainter {
-//   @override
-//   void paint(Canvas canvas, Size size) {
-//     canvas.drawRect(
-//       Rect.fromLTWH(0, 0, size.width, size.height),
-//       Paint()
-//         ..blendMode = BlendMode.clear
-//         ..color = const Color(0x00000000),
-//     );
-//   }
-
-//   @override
-//   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-// }
+  @override
+  Widget build(BuildContext context) {
+    return const HtmlElementView(viewType: _viewType);
+  }
+}
