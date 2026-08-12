@@ -364,6 +364,14 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
     final descriptor = await _textureDescriptorRegistry.create(width, height);
     try {
       await _textureDescriptorRegistry.bindToView(descriptor, view);
+
+      // The native plugins apply the viewport inside their texture
+      // allocation/resize paths, and embedders rely on that contract (they
+      // deliberately do not call setViewport themselves). Web must do the
+      // same: without this the view keeps a degenerate viewport and
+      // rasterizes nothing into the canvas framebuffer.
+      await view.setViewport(descriptor.width, descriptor.height);
+
       final dpr = window.devicePixelRatio;
       _logger.info(
         "Creating descriptor for HTML canvas ${descriptor.width}x${descriptor.height} at dpr $dpr",

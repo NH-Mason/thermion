@@ -61,6 +61,9 @@ class _ThermionCanvasViewState extends State<ThermionCanvasView> {
     canvas.style
       ..position = ''
       ..zIndex = ''
+      // Input stays a Flutter concern: gestures must reach the framework's
+      // event capture layer, not the DOM canvas.
+      ..pointerEvents = 'none'
       ..display = 'block';
   }
 
