@@ -38,7 +38,9 @@ class _ThermionWidgetState extends State<ThermionWidget> {
           aspect: descriptor.width.toDouble() / descriptor.height.toDouble(),
         );
 
-        await view.setViewport(descriptor.width, descriptor.height);
+        // The plugin owns the viewport: every implementation applies it in
+        // its texture allocation/resize path, so setting it again here was a
+        // duplicate render-thread round trip.
       },
     );
   }
