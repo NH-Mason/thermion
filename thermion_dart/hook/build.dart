@@ -637,6 +637,21 @@ const _webR2BaseUrl = 'https://pub-c8b6266320924116aaddce03b5313c0a.r2.dev';
 Future<void> _downloadWebArtifacts(BuildInput input, Logger logger) async {
   final packageRoot = input.packageRoot.toFilePath(windows: Platform.isWindows);
 
+  // The consuming application owns and versions thermion_dart.js/.wasm.
+  // Set `web_vendored: true` under `hooks.user_defines.thermion_dart` in the
+  // consuming app's pubspec.yaml to keep both the local-build copy and the R2
+  // download from replacing those files.
+  final webVendored = input.userDefines["web_vendored"];
+  if (webVendored == true ||
+      webVendored == "true" ||
+      webVendored == 1 ||
+      webVendored == "1") {
+    logger.info(
+      '[web_vendored] Preserving artifacts in the consuming app web/ directory',
+    );
+    return;
+  }
+
   // Local-build override: skip the R2 download and copy from the emscripten
   // build output instead. Set `web_local: true` under
   // `hooks.user_defines.thermion_dart` in the consuming app's pubspec.yaml
