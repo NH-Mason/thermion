@@ -1897,15 +1897,11 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
     // reads it from the blob's DFD. `expectTransfer` is verified below rather
     // than passed down, so that a wrong declaration can never change what is
     // requested.
-    final resultPtr = await withPointerCallback<TKtx2LoadResult>(
-      (cb) => Ktx2Reader_createTextureRenderThread(
-        engine,
-        data.address,
-        data.length,
-        Ktx2TransferFunction.unknown.value,
-        maxMipLevels,
-        cb,
-      ),
+    final resultPtr = await Ktx2Reader_createTextureFromBuffer(
+      engine,
+      data,
+      Ktx2TransferFunction.unknown.value,
+      maxMipLevels,
     );
 
     if (resultPtr == nullptr) {
