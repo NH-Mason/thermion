@@ -118,7 +118,9 @@ class _ThermionCanvasViewState extends State<ThermionCanvasView> {
         host.style
           ..width = '100%'
           ..height = '100%';
-        final token = params is int ? params : -1;
+        // Fail fast on malformed params: a shared sentinel token would make
+        // unrelated views collide and leak host registrations.
+        final token = params! as int;
         _CanvasOwnership.registerHost(token, host);
         return host;
       });

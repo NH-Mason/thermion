@@ -75,14 +75,29 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
       final rendered = _shouldRender(timestamp.toDartDouble, targetFps);
       if (rendered) {
         // render() is async: its interop failure surfaces on the Future,
-        // not in this synchronous frame.
-        final renderFuture = app?.render();
-        if (renderFuture != null) {
+        // not in this synchronous frame. Never overlap render attempts —
+        // out-of-order completions would corrupt the consecutive-failure
+        // counter — and stamp each with the engine generation so a late
+        // completion from a torn-down engine cannot poison its successor.
+        if (app != null && !_renderInFlight) {
+          _renderInFlight = true;
+          final generation = _engineGeneration;
           unawaited(
-            renderFuture.then(
-              (_) => _consecutiveTickFailures = 0,
-              onError: (Object err) => _noteTickFailure('render failed: $err'),
-            ),
+            app
+                .render()
+                .then(
+                  (_) {
+                    if (generation == _engineGeneration) {
+                      _consecutiveTickFailures = 0;
+                    }
+                  },
+                  onError: (Object err) {
+                    if (generation == _engineGeneration) {
+                      _noteTickFailure('render failed: $err');
+                    }
+                  },
+                )
+                .whenComplete(() => _renderInFlight = false),
           );
         }
 
@@ -106,6 +121,7 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
   /// confirmed abort ([_installAbortHook]) latches immediately.
   static int _consecutiveTickFailures = 0;
   static const _tickFailureThreshold = 3;
+  static bool _renderInFlight = false;
 
   static void _noteTickFailure(String reason) {
     _consecutiveTickFailures++;
@@ -280,8 +296,21 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
       return swapChain!;
     }
 
+    if (_rendererUnavailable) {
+      // An aborted Emscripten module cannot be re-initialized in-process:
+      // re-binding the same dead module and awaiting its teardown can hang
+      // with no timeout. Fail fast and catchably; recovery requires a page
+      // (module) reload.
+      throw StateError(
+        'Thermion web renderer was lost (engine generation '
+        '$_engineGeneration); the wasm module must be reloaded before the '
+        'engine can be initialized again.',
+      );
+    }
+
     _engineGeneration++;
     _consecutiveTickFailures = 0;
+    _renderInFlight = false;
 
     HTMLCanvasElement? canvas;
     // first, try and initialize bindings to see if the user has included thermion_dart.js manually in index.html
@@ -333,7 +362,9 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
       throw Exception("Could not locate or create canvas");
     }
     canvas.id = "thermion_canvas";
-    _setCanvasElement(canvas);
+    // NOT published to _canvasElement yet: FFIFilamentApp.create destroys any
+    // previous app first, and the old app's onDestroy -> _resetWebState would
+    // clear a publication made now. Publish only after creation succeeds.
     // canvas.style.display = "none";
     document.body!.appendChild(canvas);
 
@@ -357,6 +388,10 @@ class ThermionFlutterPluginImpl extends ThermionFlutterPlugin
     });
 
     _installAbortHook();
+
+    // Safe to publish now: any previous app's onDestroy (which clears the
+    // publication via _resetWebState) has already run inside create().
+    _setCanvasElement(canvas);
 
     // Render to the canvas's default framebuffer (framebuffer 0): a
     // null-window swapchain routes Filament's default render target to fb 0
