@@ -146,7 +146,7 @@ extern "C"
     {
       std::lock_guard<std::mutex> lock(_frameClientsMutex());
       bool present = false;
-      for (const auto& client : _frameClients) {
+      for (const auto& client : _frameClients()) {
         if (client.callback == callback) {
           present = true;
           break;
@@ -258,7 +258,7 @@ extern "C"
     {
       std::lock_guard<std::mutex> lock(_frameClientsMutex());
       bool present = false;
-      for (const auto& client : _frameClients) {
+      for (const auto& client : _frameClients()) {
         if (client.callback == nullptr && client.port == port) {
           present = true;
           break;
