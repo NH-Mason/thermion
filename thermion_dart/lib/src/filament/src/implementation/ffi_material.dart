@@ -2,6 +2,28 @@ import 'dart:async';
 import 'package:thermion_dart/src/filament/src/implementation/ffi_texture.dart';
 import 'package:thermion_dart/thermion_dart.dart';
 
+/// Owns the temporary UTF-8 parameter-name pointer for exactly one native
+/// call: allocates, invokes [callback], then reclaims (stackRestore on wasm,
+/// free on native). The callback MUST stay synchronous and MUST NOT return or
+/// retain stack-backed pointers — an async closure would have its stack
+/// restored before the future completes.
+T _withParameterName<T>(String name, T Function(Pointer<Char>) callback) {
+  late Pointer stackPtr;
+  if (FILAMENT_WASM) {
+    stackPtr = stackSave();
+  }
+  final ptr = name.toNativeUtf8().cast<Char>();
+  try {
+    return callback(ptr);
+  } finally {
+    if (FILAMENT_WASM) {
+      stackRestore(stackPtr);
+    } else {
+      free(ptr);
+    }
+  }
+}
+
 class FFIMaterial extends Material<Pointer<TMaterial>> {
   final Pointer<TMaterial> pointer;
 
@@ -28,9 +50,9 @@ class FFIMaterial extends Material<Pointer<TMaterial>> {
 
   @override
   Future<bool> hasParameter(String propertyName) async {
-    return Material_hasParameter(
-      pointer,
-      propertyName.toNativeUtf8().cast<Char>(),
+    return _withParameterName(
+      propertyName,
+      (ptr) => Material_hasParameter(pointer, ptr),
     );
   }
 
@@ -70,41 +92,27 @@ class FFIMaterialInstance extends MaterialInstance<Pointer<TMaterialInstance>> {
 
   @override
   Future setParameterFloat(String name, double value) async {
-    MaterialInstance_setParameterFloat(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      value,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterFloat(pointer, ptr, value);
+    });
   }
 
   @override
   Future setParameterFloat2(String name, double x, double y) async {
-    MaterialInstance_setParameterFloat2(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      x,
-      y,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterFloat2(pointer, ptr, x, y);
+    });
   }
 
   @override
   Future setParameterFloat3(String name, double x, double y, double z) async {
-    MaterialInstance_setParameterFloat3(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      x,
-      y,
-      z,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterFloat3(pointer, ptr, x, y, z);
+    });
   }
 
   @override
   Future setParameterFloat3Array(String name, List<Vector3> array) async {
-    late Pointer stackPtr;
-    if (FILAMENT_WASM) {
-      //stackPtr = stackSave();
-    }
-    final ptr = name.toNativeUtf8().cast<Char>();
     final data = Float64List(array.length * 3);
     int i = 0;
     for (final item in array) {
@@ -113,15 +121,16 @@ class FFIMaterialInstance extends MaterialInstance<Pointer<TMaterialInstance>> {
       data[i + 2] = item.z;
       i += 3;
     }
-    MaterialInstance_setParameterFloat3Array(
-      pointer,
-      ptr,
-      data.address,
-      array.length * 3,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterFloat3Array(
+        pointer,
+        ptr,
+        data.address,
+        array.length * 3,
+      );
+    });
 
     if (FILAMENT_WASM) {
-      //stackRestore(stackPtr);
       data.free();
     }
   }
@@ -134,23 +143,16 @@ class FFIMaterialInstance extends MaterialInstance<Pointer<TMaterialInstance>> {
     double z,
     double w,
   ) async {
-    MaterialInstance_setParameterFloat4(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      x,
-      y,
-      z,
-      w,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterFloat4(pointer, ptr, x, y, z, w);
+    });
   }
 
   @override
   Future setParameterInt(String name, int value) async {
-    MaterialInstance_setParameterInt(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      value,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterInt(pointer, ptr, value);
+    });
   }
 
   @override
@@ -261,49 +263,39 @@ class FFIMaterialInstance extends MaterialInstance<Pointer<TMaterialInstance>> {
     covariant FFITexture texture,
     covariant FFITextureSampler sampler,
   ) async {
-    MaterialInstance_setParameterTexture(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      texture.pointer,
-      sampler.pointer,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterTexture(
+        pointer,
+        ptr,
+        texture.pointer,
+        sampler.pointer,
+      );
+    });
   }
 
   @override
   Future setParameterBool(String name, bool value) async {
-    MaterialInstance_setParameterBool(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      value,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterBool(pointer, ptr, value);
+    });
   }
 
   @override
   Future setParameterMat3(String name, Matrix3 matrix) async {
-    late Pointer stackPtr;
-    if (FILAMENT_WASM) {
-      //stackPtr = stackSave();
-    }
-
-    MaterialInstance_setParameterMat3(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      matrix.storage.address,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterMat3(pointer, ptr, matrix.storage.address);
+    });
 
     if (FILAMENT_WASM) {
-      //stackRestore(stackPtr);
       matrix.storage.free();
     }
   }
 
   @override
   Future setParameterMat4(String name, Matrix4 matrix) async {
-    MaterialInstance_setParameterMat4(
-      pointer,
-      name.toNativeUtf8().cast<Char>(),
-      matrix.storage.address,
-    );
+    _withParameterName(name, (ptr) {
+      MaterialInstance_setParameterMat4(pointer, ptr, matrix.storage.address);
+    });
   }
 
   @override
