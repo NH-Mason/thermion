@@ -80,13 +80,19 @@ extern "C"
   // unbalanced extra destroy releases a reference someone else still holds
   // and re-opens the use-after-free. The Dart side enforces this with a
   // reentrancy latch in FFIFilamentApp.destroy().
-  static std::mutex _renderThreadMutex;
+  // Function-local lazy static (never destroyed): nothing runs at image
+  // load — a namespace-scope std::mutex here fast-failed the DEBUG Windows
+  // runner at process init (0xC0000409 before wWinMain).
+  static std::mutex& _renderThreadMutex() {
+    static std::mutex* m = new std::mutex();
+    return *m;
+  }
   static int _renderThreadRefs = 0;
 
   EMSCRIPTEN_KEEPALIVE void* RenderThread_create()
   {
     TRACE("RenderThread_create");
-    std::lock_guard<std::mutex> lock(_renderThreadMutex);
+    std::lock_guard<std::mutex> lock(_renderThreadMutex());
     if (_renderThread)
     {
       _renderThreadRefs++;
@@ -103,7 +109,7 @@ extern "C"
   EMSCRIPTEN_KEEPALIVE void RenderThread_destroy()
   {
     TRACE("RenderThread_destroy");
-    std::lock_guard<std::mutex> lock(_renderThreadMutex);
+    std::lock_guard<std::mutex> lock(_renderThreadMutex());
     if (!_renderThread)
     {
       _renderThreadRefs = 0;

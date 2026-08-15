@@ -49,14 +49,27 @@ extern "C"
     FrameCallback callback; // nullptr for port clients
     int64_t port;           // 0 for callback clients
   };
-  static std::mutex _schedulerLifecycleMutex;
-  static std::mutex _frameClientsMutex;
-  static std::vector<FrameClient> _frameClients;
+  // Function-local lazy statics (never destroyed): nothing runs at image
+  // load, which keeps the plugin free of static-initialization order and
+  // CRT-mix hazards — a namespace-scope std::mutex here fast-failed the
+  // DEBUG Windows runner at process init (0xC0000409 before wWinMain).
+  static std::mutex& _schedulerLifecycleMutex() {
+    static std::mutex* m = new std::mutex();
+    return *m;
+  }
+  static std::mutex& _frameClientsMutex() {
+    static std::mutex* m = new std::mutex();
+    return *m;
+  }
+  static std::vector<FrameClient>& _frameClients() {
+    static std::vector<FrameClient>* v = new std::vector<FrameClient>();
+    return *v;
+  }
 
   static void _fanoutFrameCallback(uint64_t frameTimeNanos) {
 #ifndef __EMSCRIPTEN__
-    std::lock_guard<std::mutex> lock(_frameClientsMutex);
-    for (auto it = _frameClients.begin(); it != _frameClients.end();) {
+    std::lock_guard<std::mutex> lock(_frameClientsMutex());
+    for (auto it = _frameClients().begin(); it != _frameClients().end();) {
       if (it->callback) {
         it->callback(frameTimeNanos);
         ++it;
@@ -65,7 +78,7 @@ extern "C"
       if (Dart_PostCObject_DL == nullptr) {
         // Dart_InitializeApiDL never succeeded; this port can never be
         // reached. Drop the client instead of dereferencing null.
-        it = _frameClients.erase(it);
+        it = _frameClients().erase(it);
         continue;
       }
       Dart_CObject msg;
@@ -75,7 +88,7 @@ extern "C"
         ++it;
       } else {
         // The receiving isolate is gone (hot restart / closed window).
-        it = _frameClients.erase(it);
+        it = _frameClients().erase(it);
       }
     }
     // Never stop/delete the scheduler from inside its own dispatch: platform
@@ -129,9 +142,9 @@ extern "C"
 
   EMSCRIPTEN_KEEPALIVE void FrameScheduler_start(FrameCallback callback, int targetFps) {
 #ifndef __EMSCRIPTEN__
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     {
-      std::lock_guard<std::mutex> lock(_frameClientsMutex);
+      std::lock_guard<std::mutex> lock(_frameClientsMutex());
       bool present = false;
       for (const auto& client : _frameClients) {
         if (client.callback == callback) {
@@ -140,7 +153,7 @@ extern "C"
         }
       }
       if (!present) {
-        _frameClients.push_back(FrameClient{callback, 0});
+        _frameClients().push_back(FrameClient{callback, 0});
       }
     }
     _ensureSchedulerStartedLocked(targetFps);
@@ -152,10 +165,10 @@ extern "C"
     // Legacy remove-everything teardown. With more than one live engine this
     // stops every window's frame loop — per-client removal goes through
     // FrameScheduler_removePort / FrameScheduler_removeCallback instead.
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     {
-      std::lock_guard<std::mutex> lock(_frameClientsMutex);
-      _frameClients.clear();
+      std::lock_guard<std::mutex> lock(_frameClientsMutex());
+      _frameClients().clear();
     }
     _stopSchedulerLocked();
 
@@ -173,18 +186,18 @@ extern "C"
 
   EMSCRIPTEN_KEEPALIVE void FrameScheduler_removePort(int64_t port) {
 #ifndef __EMSCRIPTEN__
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     bool empty;
     {
-      std::lock_guard<std::mutex> lock(_frameClientsMutex);
-      _frameClients.erase(
-          std::remove_if(_frameClients.begin(), _frameClients.end(),
+      std::lock_guard<std::mutex> lock(_frameClientsMutex());
+      _frameClients().erase(
+          std::remove_if(_frameClients().begin(), _frameClients().end(),
                          [port](const FrameClient& client) {
                            return client.callback == nullptr &&
                                   client.port == port;
                          }),
-          _frameClients.end());
-      empty = _frameClients.empty();
+          _frameClients().end());
+      empty = _frameClients().empty();
     }
     if (empty) {
       _stopSchedulerLocked();
@@ -194,17 +207,17 @@ extern "C"
 
   EMSCRIPTEN_KEEPALIVE void FrameScheduler_removeCallback(FrameCallback callback) {
 #ifndef __EMSCRIPTEN__
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     bool empty;
     {
-      std::lock_guard<std::mutex> lock(_frameClientsMutex);
-      _frameClients.erase(
-          std::remove_if(_frameClients.begin(), _frameClients.end(),
+      std::lock_guard<std::mutex> lock(_frameClientsMutex());
+      _frameClients().erase(
+          std::remove_if(_frameClients().begin(), _frameClients().end(),
                          [callback](const FrameClient& client) {
                            return client.callback == callback;
                          }),
-          _frameClients.end());
-      empty = _frameClients.empty();
+          _frameClients().end());
+      empty = _frameClients().empty();
     }
     if (empty) {
       _stopSchedulerLocked();
@@ -241,9 +254,9 @@ extern "C"
 
   EMSCRIPTEN_KEEPALIVE void FrameScheduler_startWithPort(int64_t port, int targetFps) {
 #ifndef __EMSCRIPTEN__
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     {
-      std::lock_guard<std::mutex> lock(_frameClientsMutex);
+      std::lock_guard<std::mutex> lock(_frameClientsMutex());
       bool present = false;
       for (const auto& client : _frameClients) {
         if (client.callback == nullptr && client.port == port) {
@@ -252,7 +265,7 @@ extern "C"
         }
       }
       if (!present) {
-        _frameClients.push_back(FrameClient{nullptr, port});
+        _frameClients().push_back(FrameClient{nullptr, port});
       }
     }
     // The scheduler always runs in callback mode with the fan-out trampoline;
@@ -267,7 +280,7 @@ extern "C"
 #ifndef __EMSCRIPTEN__
     // The cap is process-wide: with two engines registered the shared
     // scheduler dispatches at one rate for both windows.
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     if (_frameScheduler) {
       _frameScheduler->setTargetFps(normalizedFps);
     }
@@ -370,7 +383,7 @@ extern "C"
 #ifndef __EMSCRIPTEN__
     // Standalone native-loop mode (single client by construction); replaces
     // whatever scheduler exists.
-    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex);
+    std::lock_guard<std::mutex> lifecycle(_schedulerLifecycleMutex());
     _stopSchedulerLocked();
     _frameScheduler = new thermion::TimerFrameScheduler(
         targetFps > 0 ? targetFps : 60);
