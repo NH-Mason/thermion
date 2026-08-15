@@ -403,10 +403,15 @@ outputDirectory : ${outputDirectory.path}
       }
     }
 
+    // Per-process response file: a fixed name in systemTemp is shared by
+    // EVERY concurrent build on the machine (parallel worktrees, a test run
+    // racing an app build), and two hooks with different package checkouts
+    // clobbering each other's source list produces failed builds — or worse,
+    // a DLL silently compiled from a mixed/foreign source set.
     var srcs = File(
       Directory.systemTemp.path +
           Platform.pathSeparator +
-          "thermion_sources.rsp",
+          "thermion_sources_$pid.rsp",
     );
     srcs.writeAsStringSync(sources.join("\n"));
 
