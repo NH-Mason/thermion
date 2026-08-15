@@ -59,14 +59,43 @@ extern "C"
 
   std::unique_ptr<RenderThread> _renderThread;
 
+  // Two-engine support: the render thread is a process global that may be
+  // shared by multiple Dart isolates (the primary window and popout windows
+  // each run their own engine). Acquire/release discipline:
+  // RenderThread_create reuses a live thread and bumps the refcount;
+  // RenderThread_destroy only destroys once the last reference is released.
+  // A reference leaked by a dead isolate (hot restart) deliberately keeps the
+  // thread alive for reuse — tearing down a thread another live engine still
+  // renders on is the strictly worse failure.
+  //
+  // Scope of the lock: create/destroy only. The many other entry points in
+  // this file deref the bare _renderThread unlocked, exactly as before this
+  // change; refcounting narrows (not widens) their exposure, because the
+  // thread is now only ever destroyed after every isolate has released its
+  // reference — an isolate queueing tasks after releasing is a caller bug
+  // that was equally fatal under the old single-owner model.
+  //
+  // PRECONDITION the narrowing argument rests on: create/destroy calls are
+  // BALANCED per owner — release is an owner's last touch of the thread. An
+  // unbalanced extra destroy releases a reference someone else still holds
+  // and re-opens the use-after-free. The Dart side enforces this with a
+  // reentrancy latch in FFIFilamentApp.destroy().
+  static std::mutex _renderThreadMutex;
+  static int _renderThreadRefs = 0;
+
   EMSCRIPTEN_KEEPALIVE void* RenderThread_create()
   {
     TRACE("RenderThread_create");
+    std::lock_guard<std::mutex> lock(_renderThreadMutex);
     if (_renderThread)
     {
-      Log("WARNING - you are attempting to create a RenderThread when the previous one has not been disposed.");
+      _renderThreadRefs++;
+      Log("RenderThread_create: reusing live render thread (refs=%d).",
+          _renderThreadRefs);
+      return _renderThread.get();
     }
     _renderThread = std::make_unique<RenderThread>();
+    _renderThreadRefs = 1;
     TRACE("RenderThread created");
     return _renderThread.get();
   }
@@ -74,6 +103,21 @@ extern "C"
   EMSCRIPTEN_KEEPALIVE void RenderThread_destroy()
   {
     TRACE("RenderThread_destroy");
+    std::lock_guard<std::mutex> lock(_renderThreadMutex);
+    if (!_renderThread)
+    {
+      _renderThreadRefs = 0;
+      return;
+    }
+    if (_renderThreadRefs > 1)
+    {
+      _renderThreadRefs--;
+      Log("RenderThread_destroy: %d reference(s) remain; render thread stays "
+          "alive.",
+          _renderThreadRefs);
+      return;
+    }
+    _renderThreadRefs = 0;
     _renderThread = nullptr;
   }
 

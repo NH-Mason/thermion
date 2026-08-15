@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/scheduler.dart';
 import 'package:logging/logging.dart';
 // ignore: implementation_imports
@@ -10,6 +9,8 @@ import 'package:thermion_dart/src/bindings/src/thermion_dart_ffi.g.dart'
     show
         FrameScheduler_start,
         FrameScheduler_stop,
+        FrameScheduler_removePort,
+        FrameScheduler_removeCallback,
         FrameCallbackFunction,
         FrameScheduler_initDartApi,
         FrameScheduler_startWithPort,
@@ -24,10 +25,13 @@ import 'package:thermion_dart/src/bindings/src/thermion_dart_ffi.g.dart'
 /// Drives per-frame callbacks off the native FrameScheduler (CVDisplayLink /
 /// DXGI / AChoreographer / timer) via one of three modes:
 ///
-/// - **Direct callback** (release builds): native calls a Dart function
-///   pointer via [ffi.NativeCallable.listener].
-/// - **Port mode** (debug builds): native posts messages to a [ReceivePort].
-///   Hot-restart safe — messages to dead ports are silently dropped.
+/// - **Port mode** (macOS/iOS/Android/Windows, every build mode): native
+///   posts messages to a [ReceivePort]. Isolate-death safe — messages to
+///   dead ports are silently dropped and the dead client is pruned, which
+///   is what makes it valid for a multi-engine process (see [start]).
+/// - **Direct callback**: native calls a Dart function pointer via
+///   [ffi.NativeCallable.listener]. Kept for non-Flutter embedders; no
+///   Flutter platform reaches it.
 /// - **Flutter-synced** (Linux native render loop): Flutter's persistent
 ///   frame callback drives a non-blocking native render request. [onFrame]
 ///   is not invoked in this mode.
@@ -36,7 +40,20 @@ class FrameScheduler {
 
   static final FrameScheduler _instance = FrameScheduler._();
 
-  /// Returns the process-wide singleton.
+  /// Returns this isolate's singleton.
+  ///
+  /// One per engine, NOT process-wide: every Flutter engine (the primary
+  /// window and each popout window) runs its own Dart isolate with its own
+  /// facade instance. The native scheduler behind it IS process-wide and
+  /// multi-client: [start] registers this isolate as one client of the shared
+  /// scheduler, and [stop] deregisters exactly this isolate's client — never
+  /// the whole scheduler — so in callback/port mode one window starting or
+  /// stopping cannot stall another window's frame loop.
+  ///
+  /// The Linux flutter-synced mode is NOT multi-engine safe: it binds
+  /// process-global render-thread/render-manager pointers and its [stop] is
+  /// still the global teardown. Multi-window rendering must not be enabled on
+  /// Linux until that path is keyed per engine.
   static FrameScheduler get instance => _instance;
 
   /// Called each frame in direct/port mode. Not invoked in Flutter-synced mode.
@@ -89,8 +106,17 @@ class FrameScheduler {
   /// created. Monotonic; sample deltas to measure scheduled frames-per-second.
   int get scheduledFrameCount => _scheduledFrameCount;
 
-  /// Start the native scheduler. Picks port mode in debug builds on
-  /// macOS/iOS/Android/Windows and a direct native callback otherwise.
+  /// Start the native scheduler. Uses port mode in EVERY build mode on
+  /// macOS/iOS/Android/Windows and a direct native callback otherwise
+  /// (a path no Flutter platform reaches: Linux runs flutter-synced).
+  ///
+  /// Port mode in release is deliberate, not just a debug convenience: the
+  /// shared native scheduler can outlive this isolate (another engine keeps
+  /// it running when a popout window closes without a clean
+  /// [FilamentApp.destroy]), and a dead port is safely pruned natively on its
+  /// first failed post — while a dead [ffi.NativeCallable] trampoline invoked
+  /// from the dispatch thread is undefined behaviour. Only self-pruning
+  /// clients may register from a Flutter engine.
   ///
   /// Idempotent: a no-op if already active. Guards against a rapid
   /// pause→resume (or an in-flight [start]) double-registering the
@@ -100,11 +126,10 @@ class FrameScheduler {
     _active = true;
 
     final usePortMode =
-        kDebugMode &&
-        (Platform.isMacOS ||
-            Platform.isIOS ||
-            Platform.isAndroid ||
-            Platform.isWindows);
+        Platform.isMacOS ||
+        Platform.isIOS ||
+        Platform.isAndroid ||
+        Platform.isWindows;
 
     if (usePortMode) {
       await _initializePortMode();
@@ -142,18 +167,36 @@ class FrameScheduler {
     _logger.info('Flutter-synced render loop started');
   }
 
-  /// Stop the native scheduler and release the Dart-side callback/port.
+  /// Deregister this isolate's client from the shared native scheduler and
+  /// release the Dart-side callback/port.
   ///
-  /// Safe to call when already stopped. Always calls the native stop —
-  /// after hot restart the native scheduler may still be running with a
-  /// dangling pointer from the previous isolate.
+  /// Safe to call when already stopped. Deliberately does NOT call the global
+  /// `FrameScheduler_stop()` in callback/port mode: the native scheduler is
+  /// shared by every engine in the process, and the global stop would freeze
+  /// the other window's frame loop. A port left behind by a dead isolate
+  /// (hot restart) is pruned natively on its first failed post, and the
+  /// scheduler itself is torn down when its last client deregisters.
   void stop() {
     _active = false;
-    _flutterSynced = false;
 
-    // Always stop native state even when Dart has just hot-restarted and no
-    // longer remembers that the previous isolate started a scheduler.
-    FrameScheduler_stop();
+    if (_flutterSynced) {
+      // Flutter-synced mode (Linux) drives the native render loop through
+      // process-global render-thread/render-manager pointers; the global stop
+      // is still the correct teardown there, and popout windows never run
+      // this mode.
+      FrameScheduler_stop();
+    } else {
+      final callable = _frameCallable;
+      if (callable != null) {
+        FrameScheduler_removeCallback(callable.nativeFunction);
+      }
+      final port = _framePort;
+      if (port != null) {
+        FrameScheduler_removePort(port.sendPort.nativePort);
+      }
+    }
+
+    _flutterSynced = false;
 
     _frameCallable?.close();
     _frameCallable = null;
@@ -185,7 +228,18 @@ class FrameScheduler {
 
   Future<void> _initializePortMode() async {
     if (!_dartApiInitialized) {
-      FrameScheduler_initDartApi(ffi.NativeApi.initializeApiDLData);
+      final result = FrameScheduler_initDartApi(
+        ffi.NativeApi.initializeApiDLData,
+      );
+      if (result != 0) {
+        // The native fan-out silently drops port clients it cannot post to
+        // (Dart_PostCObject_DL is null when this init failed), which would
+        // mean no frames and no other symptom. Make the cause loud.
+        _logger.severe(
+          'FrameScheduler_initDartApi failed ($result); '
+          'frame callbacks will never be delivered to this isolate.',
+        );
+      }
       _dartApiInitialized = true;
     }
 

@@ -6807,7 +6807,10 @@ external void RenderManager_setPaused(
   bool paused,
 );
 
-@ffi.Native<ffi.Void Function(FrameCallback, ffi.Int)>(isLeaf: true)
+// NOT isLeaf: takes the scheduler lifecycle mutex (can block on another
+// isolate's registration/teardown), so it must run as a full FFI call that
+// can reach a safepoint.
+@ffi.Native<ffi.Void Function(FrameCallback, ffi.Int)>()
 external void FrameScheduler_start(FrameCallback callback, int targetFps);
 
 @ffi.Native<ffi.Void Function()>()
@@ -6838,10 +6841,18 @@ external void FrameScheduler_startNativeRenderLoop(int targetFps);
 @ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Void>)>(isLeaf: true)
 external int FrameScheduler_initDartApi(ffi.Pointer<ffi.Void> data);
 
-@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int)>(isLeaf: true)
+// NOT isLeaf: takes the scheduler lifecycle mutex (see FrameScheduler_start).
+@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int)>()
 external void FrameScheduler_startWithPort(int port, int targetFps);
 
-@ffi.Native<ffi.Void Function(ffi.Int)>(isLeaf: true)
+@ffi.Native<ffi.Void Function(ffi.Int64)>()
+external void FrameScheduler_removePort(int port);
+
+@ffi.Native<ffi.Void Function(FrameCallback)>()
+external void FrameScheduler_removeCallback(FrameCallback callback);
+
+// NOT isLeaf: takes the scheduler lifecycle mutex (see FrameScheduler_start).
+@ffi.Native<ffi.Void Function(ffi.Int)>()
 external void FrameScheduler_setTargetFps(int fps);
 
 @ffi.Native<ffi.Int64 Function()>(isLeaf: true)

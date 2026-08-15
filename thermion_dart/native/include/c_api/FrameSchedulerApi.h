@@ -30,6 +30,16 @@ namespace thermion
         // Start frame scheduler in port mode - posts frame timestamps to Dart port
         EMSCRIPTEN_KEEPALIVE void FrameScheduler_startWithPort(int64_t port, int targetFps);
 
+        // Multi-client deregistration (two engines in one process).
+        // FrameScheduler_start / FrameScheduler_startWithPort REGISTER a client
+        // with one process-shared native scheduler (created on first
+        // registration). These remove exactly one client; the scheduler is
+        // destroyed when the last client deregisters. FrameScheduler_stop()
+        // remains the legacy remove-everything teardown and must not be called
+        // while another engine's client is registered.
+        EMSCRIPTEN_KEEPALIVE void FrameScheduler_removePort(int64_t port);
+        EMSCRIPTEN_KEEPALIVE void FrameScheduler_removeCallback(FrameCallback callback);
+
         // Cap the dispatch rate to [fps] by skipping frames at the source.
         // fps <= 0 means unlimited (dispatch every vsync). The value is retained
         // and applied to schedulers created after this call as well.

@@ -87,10 +87,12 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
     this.animationManager = FFIAnimationManager(animationManagerPointer, this);
     this.renderManager = FFIRenderManager(renderManager);
 
-    // A new engine starts uncapped. Scheduler stop/start within this engine
-    // preserves later user changes, but a cap from an older hot-restarted
-    // engine must not leak into this one.
-    bindings.FrameScheduler_setTargetFps(0);
+    // Deliberately NO FrameScheduler_setTargetFps(0) here: the cap is a
+    // process-wide setting on a scheduler shared by every engine in the
+    // process, and resetting it while creating a SECOND engine (popout
+    // window) would silently uncap the primary window's frame rate. The
+    // trade-off is that a cap from an older hot-restarted engine persists
+    // until the app re-applies its own setting via setTargetFramerate.
   }
 
   //
@@ -119,7 +121,13 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
       await FilamentApp.instance!.destroy();
     }
 
-    RenderThread_destroy();
+    // Deliberately NO RenderThread_destroy() here. The render thread is a
+    // process global that another live engine may be rendering on right now
+    // (popout windows run their own Dart isolate, and FilamentApp.instance is
+    // per-isolate, so this code cannot see that engine). destroy() above
+    // releases this isolate's own reference; RenderThread_create() reuses a
+    // live shared thread (bumping its refcount) or creates a fresh one. A
+    // thread left behind by a hot restart is reused rather than recreated.
     final renderThreadHandle = RenderThread_create();
 
     if (renderThreadHandle == nullptr) {
@@ -387,9 +395,35 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
     );
   }
 
+  // Reentrancy latch: two teardown entry points (FFIFilamentApp.create and
+  // ViewerWidget unmount) both gate on `FilamentApp.instance != null`, which
+  // this method only nulls after several awaits — so two callers in one turn
+  // would BOTH run the body. Under the refcounted render thread that is not
+  // benign: the second RenderThread_destroy() releases a reference this app
+  // does not own and can free the thread out from under another live engine.
+  // Mirrors the `_initialization` serializer in thermion_flutter's plugin.
+  Future? _destroying;
+
   //
   @override
   Future destroy() async {
+    final inFlight = _destroying;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    final completer = Completer<void>();
+    _destroying = completer.future;
+    try {
+      await _destroyOnce();
+    } finally {
+      completer.complete();
+      // Deliberately leave _destroying set: this app instance is dead, and a
+      // third caller should await the completed future and return, not rerun.
+    }
+  }
+
+  Future _destroyOnce() async {
     for (final callback in _onBeforeDestroy) {
       await callback.call();
     }
