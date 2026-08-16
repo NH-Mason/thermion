@@ -328,7 +328,7 @@ extern "C"
       }
 
       _nativeRenderInProgress.store(false, std::memory_order_release);
-    });
+    }, "FrameScheduler_nativeRender");
     return true;
   }
 

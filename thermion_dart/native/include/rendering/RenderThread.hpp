@@ -40,12 +40,18 @@ public:
 
     /**
      * @brief Adds a task to the render thread's task queue.
-     * 
+     *
      * @param pt The packaged task to be executed
+     * @param label Optional static string naming the task. Purely diagnostic:
+     *              the worker names it when the task occupies the single
+     *              queue long enough to stall every other client (see
+     *              kSlowTaskThresholdMs in RenderThread.cpp). Must be a
+     *              string literal / static storage — it is stored by pointer.
      * @return std::future<Rt> Future for the task result
      */
     template <class Rt>
-    auto addTask(std::packaged_task<Rt()>& pt) -> std::future<Rt>;
+    auto addTask(std::packaged_task<Rt()>& pt, const char* label = nullptr)
+        -> std::future<Rt>;
 
     /**
      * @brief Adds a fire-and-forget task without allocating a packaged-task
@@ -55,7 +61,16 @@ public:
      * mechanism (for example, the Dart request-id callback).
      */
     template <class Fn>
-    void addDetachedTask(Fn&& fn);
+    void addDetachedTask(Fn&& fn, const char* label = nullptr);
+
+    /**
+     * @brief Number of tasks queued but not yet started.
+     *
+     * Diagnostic only. With more than one engine sharing this thread, the
+     * depth at enqueue time is what separates "my task is waiting behind a
+     * backlog" from "my task started immediately and is itself slow".
+     */
+    size_t pendingTaskCount();
 
 
     #ifdef __EMSCRIPTEN__
@@ -108,9 +123,16 @@ private:
     void runNativeLoop();
     #endif
 
+    // A queued unit of work plus the static label used by the worker's
+    // stall diagnostics. `label` is a borrowed pointer to static storage.
+    struct QueuedTask {
+        std::function<void()> fn;
+        const char* label;
+    };
+
     std::mutex _taskMutex;
     std::condition_variable _cv;
-    std::deque<std::function<void()>> _tasks;
+    std::deque<QueuedTask> _tasks;
     std::chrono::high_resolution_clock::time_point _lastFrameTime;
     int _frameCount = 0;
     float _accumulatedTime = 0.0f;
@@ -126,13 +148,15 @@ private:
 
 // Template implementation
 template <class Rt>
-auto RenderThread::addTask(std::packaged_task<Rt()>& pt) -> std::future<Rt> {
+auto RenderThread::addTask(std::packaged_task<Rt()>& pt, const char* label)
+    -> std::future<Rt> {
     auto ret = pt.get_future();
     {
         std::lock_guard<std::mutex> lock(_taskMutex);
-        _tasks.push_back([pt = std::make_shared<std::packaged_task<Rt()>>(
-                             std::move(pt))]
-                        { (*pt)(); });
+        _tasks.push_back(QueuedTask{
+            [pt = std::make_shared<std::packaged_task<Rt()>>(std::move(pt))]
+            { (*pt)(); },
+            label});
     }
     #ifndef __EMSCRIPTEN__
     _cv.notify_one();
@@ -141,13 +165,13 @@ auto RenderThread::addTask(std::packaged_task<Rt()>& pt) -> std::future<Rt> {
 }
 
 template <class Fn>
-void RenderThread::addDetachedTask(Fn&& fn) {
+void RenderThread::addDetachedTask(Fn&& fn, const char* label) {
     // Construct outside the critical section since std::function may need to
     // allocate for a large capture.
     std::function<void()> task(std::forward<Fn>(fn));
     {
         std::lock_guard<std::mutex> lock(_taskMutex);
-        _tasks.push_back(std::move(task));
+        _tasks.push_back(QueuedTask{std::move(task), label});
     }
     #ifndef __EMSCRIPTEN__
     _cv.notify_one();

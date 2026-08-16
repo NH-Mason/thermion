@@ -21,7 +21,18 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE void* RenderThread_create();
         EMSCRIPTEN_KEEPALIVE void RenderThread_destroy();
-        
+
+        // Engine creation runs on the shared render thread and can outlive
+        // the window that asked for it. Platform teardown paths (Flutter
+        // plugin destructors) bracket themselves with these so a half-built
+        // engine is never torn down underneath its own creation.
+        // `EngineLifecycle_lock` returns false if `timeoutMs` elapsed without
+        // acquiring — the caller then proceeds unsynchronised and MUST NOT
+        // call `EngineLifecycle_unlock`.
+        EMSCRIPTEN_KEEPALIVE bool EngineLifecycle_lock(int timeoutMs);
+        EMSCRIPTEN_KEEPALIVE void EngineLifecycle_unlock();
+
+
         EMSCRIPTEN_KEEPALIVE void RenderThread_addTask(void (*task)());
         EMSCRIPTEN_KEEPALIVE void RenderManager_setRenderableRenderThread(TRenderManager *tRenderer, TSwapChain *tSwapChain, TView **tViews, uint8_t numViews, uint32_t requestId, VoidCallback onComplete);
 

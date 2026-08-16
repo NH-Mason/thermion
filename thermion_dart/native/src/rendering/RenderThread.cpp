@@ -13,6 +13,18 @@ namespace thermion {
 std::atomic<bool> RenderThread::mStop{false};
 std::atomic<int32_t> RenderThread::mLiveWorkerCount{0};
 
+namespace {
+// A single worker drains a single FIFO, so any task that runs long stalls
+// every other client of this thread — including a second engine's creation.
+// Name the offender rather than leaving the stall to be inferred.
+constexpr double kSlowTaskThresholdMs = 250.0;
+} // namespace
+
+size_t RenderThread::pendingTaskCount() {
+    std::lock_guard<std::mutex> lock(_taskMutex);
+    return _tasks.size();
+}
+
 #ifdef __EMSCRIPTEN__
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -107,7 +119,7 @@ RenderThread::~RenderThread()
             if (_tasks.empty()) {
                 break;
             }
-            task = std::move(_tasks.front());
+            task = std::move(_tasks.front().fn);
             _tasks.pop_front();
         }
         task();
@@ -149,7 +161,7 @@ void RenderThread::iter() {
     // On Emscripten, drain all queued tasks then yield to browser.
     while (!_tasks.empty())
     {
-        auto task = std::move(_tasks.front());
+        auto task = std::move(_tasks.front().fn);
         _tasks.pop_front();
         taskLock.unlock();
         task();
@@ -185,11 +197,25 @@ void RenderThread::runNativeLoop() {
             continue;
         }
 
-        auto task = std::move(_tasks.front());
+        auto entry = std::move(_tasks.front());
         _tasks.pop_front();
         taskLock.unlock();
-        task();
+        const auto startedAt = std::chrono::steady_clock::now();
+        entry.fn();
+        const double elapsedMs =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - startedAt)
+                .count() /
+            1000.0;
         taskLock.lock();
+        if (elapsedMs >= kSlowTaskThresholdMs) {
+            const size_t waiting = _tasks.size();
+            taskLock.unlock();
+            Log("[RenderThread] task '%s' held the shared queue for %.0f ms "
+                "(%zu task(s) waiting behind it).",
+                entry.label ? entry.label : "unlabelled", elapsedMs, waiting);
+            taskLock.lock();
+        }
     }
 }
 #endif
