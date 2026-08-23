@@ -80,6 +80,12 @@ void stackRestore(Pointer ptr) {
   throw Exception();
 }
 
+/// Native has no WASM stack to reclaim, so this just runs [body].
+///
+/// See the web implementation in `js_interop.dart` for the contract [body]
+/// must honour.
+T withStackScope<T>(T Function() body) => body();
+
 class FinalizableUint8List implements Finalizable {
   final Pointer name;
   final Uint8List data;

@@ -109,32 +109,40 @@ class FFIRenderableManager
 
   @override
   Aabb3 getAxisAlignedBoundingBox(ThermionEntity entity) {
-    final bb = RenderableManager_getAxisAlignedBoundingBox(
-      renderableManager,
-      entity,
-    );
-    return Aabb3.centerAndHalfExtents(
-      Vector3(bb.centerX, bb.centerY, bb.centerZ),
-      Vector3(bb.halfExtentX, bb.halfExtentY, bb.halfExtentZ),
-    );
+    // The generated binding stack-allocates its `Aabb3` out-param and hands
+    // back a *view* over it, so the read has to happen inside the scope.
+    return withStackScope(() {
+      final bb = RenderableManager_getAxisAlignedBoundingBox(
+        renderableManager,
+        entity,
+      );
+      return Aabb3.centerAndHalfExtents(
+        Vector3(bb.centerX, bb.centerY, bb.centerZ),
+        Vector3(bb.halfExtentX, bb.halfExtentY, bb.halfExtentZ),
+      );
+    });
   }
 
   @override
   Future setAxisAlignedBoundingBox(ThermionEntity entity, Aabb3 aabb) async {
-    // Convert Aabb3 to the C struct format
-    final cAabb = StructAllocator.create<bindings.Aabb3>();
-    cAabb.centerX = aabb.center.x;
-    cAabb.centerY = aabb.center.y;
-    cAabb.centerZ = aabb.center.z;
-    cAabb.halfExtentX = (aabb.max.x - aabb.min.x) / 2;
-    cAabb.halfExtentY = (aabb.max.y - aabb.min.y) / 2;
-    cAabb.halfExtentZ = (aabb.max.z - aabb.min.z) / 2;
+    // Convert Aabb3 to the C struct format. `StructAllocator.create` is
+    // WASM-stack-backed; the native call consumes it synchronously, so the
+    // whole thing fits in one scope.
+    withStackScope(() {
+      final cAabb = StructAllocator.create<bindings.Aabb3>();
+      cAabb.centerX = aabb.center.x;
+      cAabb.centerY = aabb.center.y;
+      cAabb.centerZ = aabb.center.z;
+      cAabb.halfExtentX = (aabb.max.x - aabb.min.x) / 2;
+      cAabb.halfExtentY = (aabb.max.y - aabb.min.y) / 2;
+      cAabb.halfExtentZ = (aabb.max.z - aabb.min.z) / 2;
 
-    RenderableManager_setAxisAlignedBoundingBox(
-      renderableManager,
-      entity,
-      cAabb,
-    );
+      RenderableManager_setAxisAlignedBoundingBox(
+        renderableManager,
+        entity,
+        cAabb,
+      );
+    });
   }
 
   @override
@@ -304,22 +312,26 @@ class FFIRenderableManager
     int count, {
     int offset = 0,
   }) async {
-    final weightsPtr = makeFloat32List(weights.length);
-    for (int i = 0; i < weights.length; i++) {
-      weightsPtr[i] = weights[i];
-    }
+    // `makeFloat32List` is WASM-stack-backed and `free()` is a no-op for it,
+    // so the scope — not the free — is what reclaims this.
+    withStackScope(() {
+      final weightsPtr = makeFloat32List(weights.length);
+      for (int i = 0; i < weights.length; i++) {
+        weightsPtr[i] = weights[i];
+      }
 
-    RenderableManager_setMorphWeights(
-      renderableManager,
-      entity,
-      weightsPtr.address,
-      count,
-      offset,
-    );
+      RenderableManager_setMorphWeights(
+        renderableManager,
+        entity,
+        weightsPtr.address,
+        count,
+        offset,
+      );
 
-    if (FILAMENT_WASM) {
-      weightsPtr.free();
-    }
+      if (!FILAMENT_WASM) {
+        weightsPtr.free();
+      }
+    });
   }
 
   @override
@@ -446,15 +458,17 @@ class FFIRenderableBuilder implements RenderableBuilder {
     final halfExtents = Vector3.zero();
     aabb.copyCenterAndHalfExtents(center, halfExtents);
 
-    final cAabb = StructAllocator.create<bindings.Aabb3>();
-    cAabb.centerX = center.x;
-    cAabb.centerY = center.y;
-    cAabb.centerZ = center.z;
-    cAabb.halfExtentX = halfExtents.x;
-    cAabb.halfExtentY = halfExtents.y;
-    cAabb.halfExtentZ = halfExtents.z;
+    withStackScope(() {
+      final cAabb = StructAllocator.create<bindings.Aabb3>();
+      cAabb.centerX = center.x;
+      cAabb.centerY = center.y;
+      cAabb.centerZ = center.z;
+      cAabb.halfExtentX = halfExtents.x;
+      cAabb.halfExtentY = halfExtents.y;
+      cAabb.halfExtentZ = halfExtents.z;
 
-    bindings.RenderableBuilder_boundingBox(_builderPtr!, cAabb);
+      bindings.RenderableBuilder_boundingBox(_builderPtr!, cAabb);
+    });
   }
 
   @override
@@ -638,25 +652,28 @@ class FFIRenderableBuilder implements RenderableBuilder {
     _checkNotBuilt();
 
     final totalPairs = indicesAndWeights.length;
-    final dataPtr = makeFloat32List(totalPairs * 2);
 
-    int offset = 0;
-    for (final pair in indicesAndWeights) {
-      dataPtr[offset++] = pair[0]; // bone index
-      dataPtr[offset++] = pair[1]; // weight
-    }
+    withStackScope(() {
+      final dataPtr = makeFloat32List(totalPairs * 2);
 
-    bindings.RenderableBuilder_boneIndicesAndWeights(
-      _builderPtr!,
-      primitiveIndex,
-      dataPtr.address,
-      totalPairs,
-      bonesPerVertex,
-    );
+      int offset = 0;
+      for (final pair in indicesAndWeights) {
+        dataPtr[offset++] = pair[0]; // bone index
+        dataPtr[offset++] = pair[1]; // weight
+      }
 
-    if (FILAMENT_WASM) {
-      dataPtr.free();
-    }
+      bindings.RenderableBuilder_boneIndicesAndWeights(
+        _builderPtr!,
+        primitiveIndex,
+        dataPtr.address,
+        totalPairs,
+        bonesPerVertex,
+      );
+
+      if (!FILAMENT_WASM) {
+        dataPtr.free();
+      }
+    });
   }
 
   @override

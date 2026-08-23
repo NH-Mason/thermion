@@ -191,46 +191,50 @@ class FFILightManager extends LightManager<Pointer<TLightManager>> {
 
   @override
   void setShadowOptions(ThermionEntity light, ShadowOptions options) {
-    final tShadowOptions = StructAllocator.create<TShadowOptions>();
-    tShadowOptions.mapSize = options.mapSize;
-    tShadowOptions.shadowCascades = options.shadowCascades;
+    // `StructAllocator.create` is WASM-stack-backed and the native call
+    // consumes it synchronously, so one scope reclaims the whole struct.
+    withStackScope(() {
+      final tShadowOptions = StructAllocator.create<TShadowOptions>();
+      tShadowOptions.mapSize = options.mapSize;
+      tShadowOptions.shadowCascades = options.shadowCascades;
 
-    // For N cascades, N-1 split positions are used
-    final requiredSplits = tShadowOptions.shadowCascades - 1;
-    if (requiredSplits > 0) {
-      if (options.cascadeSplitPositions.length < requiredSplits) {
-        throw ArgumentError(
-          'cascadeSplitPositions must have at least $requiredSplits elements for ${tShadowOptions.shadowCascades} cascades',
-        );
+      // For N cascades, N-1 split positions are used
+      final requiredSplits = tShadowOptions.shadowCascades - 1;
+      if (requiredSplits > 0) {
+        if (options.cascadeSplitPositions.length < requiredSplits) {
+          throw ArgumentError(
+            'cascadeSplitPositions must have at least $requiredSplits elements for ${tShadowOptions.shadowCascades} cascades',
+          );
+        }
+        // Copy the required split positions, ensuring we don't exceed array bounds
+        for (int i = 0; i < requiredSplits; i++) {
+          tShadowOptions.cascadeSplitPositions[i] =
+              options.cascadeSplitPositions[i];
+        }
       }
-      // Copy the required split positions, ensuring we don't exceed array bounds
-      for (int i = 0; i < requiredSplits; i++) {
-        tShadowOptions.cascadeSplitPositions[i] =
-            options.cascadeSplitPositions[i];
-      }
-    }
-    tShadowOptions.constantBias = options.constantBias;
-    tShadowOptions.normalBias = options.normalBias;
-    tShadowOptions.shadowFar = options.shadowFar;
-    tShadowOptions.shadowNearHint = options.shadowNearHint;
-    tShadowOptions.shadowFarHint = options.shadowFarHint;
-    tShadowOptions.stable = options.stable;
-    tShadowOptions.lispsm = options.lispsm;
-    tShadowOptions.polygonOffsetConstant = options.polygonOffsetConstant;
-    tShadowOptions.polygonOffsetSlope = options.polygonOffsetSlope;
-    tShadowOptions.screenSpaceContactShadows =
-        options.screenSpaceContactShadows;
-    tShadowOptions.stepCount = options.stepCount;
-    tShadowOptions.maxShadowDistance = options.maxShadowDistance;
-    tShadowOptions.vsmElvsm = options.vsmElvsm;
-    tShadowOptions.vsmBlurWidth = options.vsmBlurWidth;
-    tShadowOptions.shadowBulbRadius = options.shadowBulbRadius;
-    tShadowOptions.transformW = options.transform.w;
-    tShadowOptions.transformX = options.transform.x;
-    tShadowOptions.transformY = options.transform.y;
-    tShadowOptions.transformZ = options.transform.z;
+      tShadowOptions.constantBias = options.constantBias;
+      tShadowOptions.normalBias = options.normalBias;
+      tShadowOptions.shadowFar = options.shadowFar;
+      tShadowOptions.shadowNearHint = options.shadowNearHint;
+      tShadowOptions.shadowFarHint = options.shadowFarHint;
+      tShadowOptions.stable = options.stable;
+      tShadowOptions.lispsm = options.lispsm;
+      tShadowOptions.polygonOffsetConstant = options.polygonOffsetConstant;
+      tShadowOptions.polygonOffsetSlope = options.polygonOffsetSlope;
+      tShadowOptions.screenSpaceContactShadows =
+          options.screenSpaceContactShadows;
+      tShadowOptions.stepCount = options.stepCount;
+      tShadowOptions.maxShadowDistance = options.maxShadowDistance;
+      tShadowOptions.vsmElvsm = options.vsmElvsm;
+      tShadowOptions.vsmBlurWidth = options.vsmBlurWidth;
+      tShadowOptions.shadowBulbRadius = options.shadowBulbRadius;
+      tShadowOptions.transformW = options.transform.w;
+      tShadowOptions.transformX = options.transform.x;
+      tShadowOptions.transformY = options.transform.y;
+      tShadowOptions.transformZ = options.transform.z;
 
-    LightManager_setShadowOptions(lightManager, light, tShadowOptions);
+      LightManager_setShadowOptions(lightManager, light, tShadowOptions);
+    });
   }
 
   @override
@@ -291,11 +295,13 @@ class FFILightManager extends LightManager<Pointer<TLightManager>> {
     final requiredSplits = cascades - 1;
 
     // Allocate native memory for the float array
-    final pointer = makeFloat32List(requiredSplits);
-
-    // Call the native method
-    LightManager_computeUniformSplits(pointer.address, cascades);
-    return pointer;
+    return withStackScope(() {
+      final pointer = makeFloat32List(requiredSplits);
+      LightManager_computeUniformSplits(pointer.address, cascades);
+      // `makeFloat32List` is a view over WASM memory, not a Dart copy —
+      // it must not outlive the scope.
+      return List<double>.from(pointer);
+    });
   }
 
   @override
@@ -307,11 +313,11 @@ class FFILightManager extends LightManager<Pointer<TLightManager>> {
     final requiredSplits = cascades - 1;
 
     // Allocate native memory for the float array
-    final pointer = makeFloat32List(requiredSplits);
-
-    // Call the native method
-    LightManager_computeLogSplits(pointer.address, cascades, near, far);
-    return pointer;
+    return withStackScope(() {
+      final pointer = makeFloat32List(requiredSplits);
+      LightManager_computeLogSplits(pointer.address, cascades, near, far);
+      return List<double>.from(pointer);
+    });
   }
 
   @override
@@ -332,17 +338,17 @@ class FFILightManager extends LightManager<Pointer<TLightManager>> {
     final requiredSplits = cascades - 1;
 
     // Allocate native memory for the float array
-    final pointer = makeFloat32List(requiredSplits);
-
-    // Call the native method
-    LightManager_computePracticalSplits(
-      pointer.address,
-      cascades,
-      near,
-      far,
-      lambda,
-    );
-    return pointer;
+    return withStackScope(() {
+      final pointer = makeFloat32List(requiredSplits);
+      LightManager_computePracticalSplits(
+        pointer.address,
+        cascades,
+        near,
+        far,
+        lambda,
+      );
+      return List<double>.from(pointer);
+    });
   }
 
   @override

@@ -19,6 +19,60 @@ extension type _NativeLibrary(NativeLibrary _) implements JSObject {
       NativeLibrary.instance as _NativeLibrary;
 
   external void _execute_queue();
+
+  /// Emscripten's `malloc`/`free` exports.
+  ///
+  /// `ffigen_js` declares these on [NativeLibrary] but keeps them library
+  /// private, and its public `malloc` helper does not register the result in
+  /// the allocation set that `Pointer.free()` consults — so a pointer obtained
+  /// that way can never be released. Re-declaring them here gives this library
+  /// a heap allocation it fully owns.
+  @JS('_malloc')
+  external Pointer<Uint8> mallocBytes(int numBytes);
+
+  @JS('_free')
+  external void freeBytes(Pointer<Uint8> ptr);
+}
+
+/// A WASM-heap staging buffer holding a private copy of some Dart bytes.
+///
+/// Every byte handed to a *render thread* native entry point must live in the
+/// WASM heap — never on the WASM stack — and must stay valid until native
+/// signals that it is done with it. See [Texture_setImageFromBuffer] for why
+/// `Uint8List.address` cannot provide that guarantee.
+class _StagedBytes {
+  final Pointer<Uint8> pointer;
+  final int size;
+  bool _released = false;
+
+  _StagedBytes._(this.pointer, this.size);
+
+  /// Allocates `source.lengthInBytes` on the WASM heap and copies [source]
+  /// into it. The caller owns the result and must call [release].
+  static _StagedBytes copyOf(Uint8List source) {
+    final size = source.lengthInBytes;
+    if (size == 0) {
+      return _StagedBytes._(nullptr.cast<Uint8>(), 0);
+    }
+    final pointer = _NativeLibrary.instance.mallocBytes(size);
+    if (pointer.address == 0) {
+      throw StateError(
+        'Thermion: failed to allocate a $size byte WASM staging buffer',
+      );
+    }
+    NativeLibrary.instance.writeArrayToMemory(source.toJS, pointer);
+    return _StagedBytes._(pointer, size);
+  }
+
+  void release() {
+    if (_released) {
+      return;
+    }
+    _released = true;
+    if (size != 0) {
+      _NativeLibrary.instance.freeBytes(pointer);
+    }
+  }
 }
 
 typedef IntPtrList = Int32List;
@@ -119,25 +173,41 @@ Future<Pointer<T>> withPointerCallback<T extends NativeType>(
 /// Uploads [buffer] into [tTexture] on the render thread.
 ///
 /// This wrapper exists because a `Uint8List` reaches native memory in a
-/// fundamentally different way on each platform, and only the web path needs a
-/// release step:
+/// fundamentally different way on each platform, and only the web path needs
+/// explicit staging:
 ///
 ///  * native (`ffi.dart`): `Uint8List.address` is dart:ffi's zero-copy address
 ///    of the Dart-heap backing store. It is only legal as a direct argument to
 ///    a leaf `@Native` call, so the call site cannot be factored any further.
-///  * web (here): `Uint8List.address` (`ffigen_js` `Uint8ListExtension`) copies
-///    the bytes into the WASM heap. For buffers >= 32 KiB — i.e. every real
-///    texture — `_getPointer` takes the `malloc` branch. Nothing else ever
-///    releases that allocation, and the WASM heap is built with
-///    `-sALLOW_MEMORY_GROWTH=0 -sINITIAL_MEMORY=512mb`, so a media-rate upload
-///    loop exhausts the whole heap in seconds.
+///  * web (here): the bytes must be copied into the WASM heap by hand.
 ///
-/// Releasing after the callback resolves is safe: `Texture_setImage`
-/// (`native/src/c_api/TTexture.cpp`) copies `data` into its own
-/// `std::vector<uint8_t>` *synchronously* — "the texture upload is async, so we
-/// need to copy the buffer" — and only then does the render-thread task invoke
-/// `onComplete`. By the time this future completes, native no longer refers to
-/// the staged copy.
+/// `Uint8List.address` (`ffigen_js` `Uint8ListExtension`) is *not* usable for a
+/// render-thread call, for two independent reasons:
+///
+///  1. For buffers < 32 KiB, `ffigen_js._getPointer` allocates on the WASM
+///     *stack*. `Texture_setImageRenderThread`
+///     (`native/src/c_api/ThermionDartRenderThreadApi.cpp`) captures `data` by
+///     value into a `std::packaged_task` and the copy into native storage does
+///     not happen until that task runs (`TTexture.cpp`, `Texture_setImage`).
+///     Handing deferred native work a stack address is only accidentally safe
+///     today because nothing in the generated interop ever calls
+///     `stackRestore`; it becomes a use-after-free the moment any caller does.
+///  2. For buffers >= 32 KiB it takes the `malloc` branch, and the pointer can
+///     only be released through `Pointer.free()` — which is a silent no-op for
+///     anything `_getPointer` did not register.
+///
+/// So stage an explicitly owned heap copy instead. Releasing it once the
+/// callback resolves is correct: `Texture_setImage` copies `data` into its own
+/// `std::vector<uint8_t>` — "the texture upload is async, so we need to copy
+/// the buffer" — *before* invoking `onComplete`, so the callback is the
+/// ownership boundary even though the copy itself is deferred.
+///
+/// (Historical note: an earlier version of this comment claimed the native
+/// copy was synchronous with the call, and that the heap was built with
+/// `-sALLOW_MEMORY_GROWTH=0 -sINITIAL_MEMORY=512mb`. Both are false. The copy
+/// is deferred to the render thread as described above, and since 2026-08-12
+/// `native/web/CMakeLists.txt` builds with `-sALLOW_MEMORY_GROWTH=1
+/// -sINITIAL_MEMORY=512mb -sMAXIMUM_MEMORY=2gb`.)
 Future<bool> Texture_setImageFromBuffer(
   Pointer<TEngine> tEngine,
   Pointer<TTexture> tTexture,
@@ -152,15 +222,15 @@ Future<bool> Texture_setImageFromBuffer(
   int bufferFormat,
   int pixelDataType,
 ) async {
-  final ptr = buffer.address;
-  final size = buffer.lengthInBytes;
+  final staged = _StagedBytes.copyOf(buffer);
+  final size = staged.size;
   try {
     return await withBoolCallback((cb) {
       Texture_setImageRenderThread(
         tEngine,
         tTexture,
         level,
-        ptr,
+        staged.pointer,
         size,
         xOffset,
         yOffset,
@@ -174,9 +244,9 @@ Future<bool> Texture_setImageFromBuffer(
       );
     });
   } finally {
-    // No-op for the < 32 KiB stack-allocated branch (the pointer is not in
-    // `_heapAllocations`); frees the malloc'd copy otherwise.
-    ptr.free();
+    // Native has finished copying out of the staging buffer by the time the
+    // callback resolves, so the heap copy can go back now.
+    staged.release();
   }
 }
 
@@ -184,25 +254,29 @@ var _ktx2StagedInputBytes = 0;
 
 /// Creates a KTX2 texture from [data] on the render thread.
 ///
-/// `ffigen_js` copies `Uint8List.address` into WASM memory. Real KTX2 inputs
-/// exceed its 32 KiB threshold and therefore use `malloc`; the returned pointer
-/// must be freed only after the render-thread callback has settled. The native
-/// entry point copies the bytes synchronously before it queues the task, so the
-/// callback is the ownership boundary.
+/// Like [Texture_setImageFromBuffer], this stages an explicitly owned copy on
+/// the WASM heap rather than using `Uint8List.address`, so that the buffer is
+/// never WASM-stack-resident and can actually be released afterwards.
+///
+/// Unlike `Texture_setImageRenderThread`, the native entry point here
+/// (`Ktx2Reader_createTextureRenderThread`) really does copy into a
+/// `std::vector<uint8_t>` *on the calling thread*, before the task is queued —
+/// it is the in-repo example of the pattern `Texture_setImageRenderThread`
+/// lacks. Releasing after the callback is therefore conservative but correct.
 Future<Pointer<TKtx2LoadResult>> Ktx2Reader_createTextureFromBuffer(
   Pointer<TEngine> tEngine,
   Uint8List data,
   int transferFunction,
   int maxMipLevels,
 ) async {
-  final ptr = data.address;
-  final size = data.lengthInBytes;
+  final staged = _StagedBytes.copyOf(data);
+  final size = staged.size;
   _ktx2StagedInputBytes += size;
   try {
     return await withPointerCallback<TKtx2LoadResult>((cb) {
       Ktx2Reader_createTextureRenderThread(
         tEngine,
-        ptr,
+        staged.pointer,
         size,
         transferFunction,
         maxMipLevels,
@@ -210,9 +284,7 @@ Future<Pointer<TKtx2LoadResult>> Ktx2Reader_createTextureFromBuffer(
       );
     });
   } finally {
-    // No-op for ffigen_js's < 32 KiB stack allocation; releases its malloc'd
-    // copy for real texture inputs.
-    ptr.free();
+    staged.release();
     _ktx2StagedInputBytes -= size;
   }
 }
@@ -339,3 +411,30 @@ Pointer stackSave() => NativeLibrary.instance.stackSave();
 
 void stackRestore(Pointer ptr) =>
     NativeLibrary.instance.stackRestore(ptr.cast());
+
+/// Runs [body] and reclaims every WASM-stack allocation it made.
+///
+/// The WASM stack pointer only ever moves *down*: `ffigen_js` routes anything
+/// under 32 KiB through emscripten's `stackAlloc` (`types.dart`,
+/// `_getPointer`, `Struct.stackAlloc`, `make*List`), and `Pointer.free()` is a
+/// silent no-op for those addresses. Nothing in the generated interop calls
+/// `stackRestore`, so without an explicit scope like this one every small
+/// staged argument permanently consumes stack against the fixed
+/// `-sSTACK_SIZE` — an unbounded, monotonic leak that aborts the module once
+/// it crosses the guard page.
+///
+/// Contract, identical to the hand-rolled save/restore pairs this replaces:
+/// [body] MUST be synchronous, and MUST NOT return or retain anything backed
+/// by the stack. In particular a generated struct out-param (`double4x4`,
+/// `Aabb3`, `TViewport`, …) is a *view* over WASM memory, not a copy, so it
+/// must be converted to a Dart value inside [body] — that is exactly why the
+/// generated bindings cannot bracket themselves and the scope has to live
+/// here, at the wrapper layer.
+T withStackScope<T>(T Function() body) {
+  final stackPtr = stackSave();
+  try {
+    return body();
+  } finally {
+    stackRestore(stackPtr);
+  }
+}
