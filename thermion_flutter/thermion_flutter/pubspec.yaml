@@ -17,7 +17,7 @@ dependencies:
   plugin_platform_interface: ^2.0.0
   ffi: ^2.1.2
   thermion_dart: ^0.4.1
-  hooks: ^1.0.0
+  hooks: ^2.0.0
   logging: ^1.2.0
   web: ^1.0.0
   objective_c: ^8.1.0
