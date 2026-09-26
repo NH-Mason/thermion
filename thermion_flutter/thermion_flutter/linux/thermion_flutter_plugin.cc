@@ -256,64 +256,80 @@ static void ensure_opengl_context(ThermionFlutterPlugin *self)
   self->backend_type = BACKEND_OPENGL;
 }
 
-static FlMethodResponse *handle_get_driver_platform(ThermionFlutterPlugin *self, FlMethodCall *method_call)
+// The backend index sent by Dart (Backend enum); Vulkan when absent.
+static int backend_from_args(FlMethodCall *method_call)
 {
   FlValue *args = fl_method_call_get_args(method_call);
-  int backend = (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_INT)
-                    ? fl_value_get_int(args)
-                    : BACKEND_VULKAN;
+  return (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_INT)
+             ? fl_value_get_int(args)
+             : BACKEND_VULKAN;
+}
 
-  int64_t platform = 0;
+// Creates the backend context on first use, then returns its driver platform.
+static int64_t driver_platform_for(ThermionFlutterPlugin *self, int backend)
+{
   if (backend == BACKEND_OPENGL)
   {
     ensure_opengl_context(self);
     if (self->use_direct_opengl)
     {
-      platform = reinterpret_cast<int64_t>(self->thermion_platform);
+      return reinterpret_cast<int64_t>(self->thermion_platform);
     }
-    else
-    {
-      platform = reinterpret_cast<int64_t>(self->opengl_context->GetPlatform());
-    }
+    return reinterpret_cast<int64_t>(self->opengl_context->GetPlatform());
   }
-  else
-  {
-    ensure_vulkan_context(self);
-    platform = reinterpret_cast<int64_t>(self->vulkan_context->GetPlatform());
-  }
-
-  g_autoptr(FlValue) result = fl_value_new_int(platform);
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  ensure_vulkan_context(self);
+  return reinterpret_cast<int64_t>(self->vulkan_context->GetPlatform());
 }
 
-static FlMethodResponse *handle_get_shared_context(ThermionFlutterPlugin *self, FlMethodCall *method_call)
+// Creates the backend context on first use, then returns its shared context.
+static int64_t shared_context_for(ThermionFlutterPlugin *self, int backend)
 {
-  FlValue *args = fl_method_call_get_args(method_call);
-  int backend = (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_INT)
-                    ? fl_value_get_int(args)
-                    : BACKEND_VULKAN;
-
-  int64_t sharedCtx = 0;
   if (backend == BACKEND_OPENGL)
   {
     ensure_opengl_context(self);
     if (self->use_direct_opengl)
     {
       // Direct sharing: return Flutter's context (Filament contexts share with it)
-      sharedCtx = reinterpret_cast<int64_t>(self->flutter_egl_context);
+      return reinterpret_cast<int64_t>(self->flutter_egl_context);
     }
-    else
-    {
-      sharedCtx = reinterpret_cast<int64_t>(self->opengl_context->GetSharedContext());
-    }
+    return reinterpret_cast<int64_t>(self->opengl_context->GetSharedContext());
   }
-  else
-  {
-    ensure_vulkan_context(self);
-    sharedCtx = reinterpret_cast<int64_t>(self->vulkan_context->GetSharedContext());
-  }
+  ensure_vulkan_context(self);
+  return reinterpret_cast<int64_t>(self->vulkan_context->GetSharedContext());
+}
 
-  g_autoptr(FlValue) result = fl_value_new_int(sharedCtx);
+static FlMethodResponse *handle_get_driver_platform(ThermionFlutterPlugin *self, FlMethodCall *method_call)
+{
+  g_autoptr(FlValue) result =
+      fl_value_new_int(driver_platform_for(self, backend_from_args(method_call)));
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+}
+
+static FlMethodResponse *handle_get_shared_context(ThermionFlutterPlugin *self, FlMethodCall *method_call)
+{
+  g_autoptr(FlValue) result =
+      fl_value_new_int(shared_context_for(self, backend_from_args(method_call)));
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+}
+
+// Returns [driverPlatform, sharedContext] from ONE call, matching the Windows
+// plugin's encoding (two int64 addresses; 0 where there is none).
+//
+// The Dart registry fetches both values together so they describe the same
+// context: two separate calls let the context be created, replaced or
+// destroyed between them. Every channel handler here runs on the GTK main
+// thread, so this single invocation is the Linux equivalent of the Windows
+// plugin's one lock: no other channel call (createTexture, destroyContext, ...)
+// can interleave between the two reads, and the context is created at most once.
+static FlMethodResponse *handle_get_rendering_context(ThermionFlutterPlugin *self, FlMethodCall *method_call)
+{
+  const int backend = backend_from_args(method_call);
+  const int64_t platform = driver_platform_for(self, backend);
+  const int64_t sharedCtx = shared_context_for(self, backend);
+
+  g_autoptr(FlValue) result = fl_value_new_list();
+  fl_value_append_take(result, fl_value_new_int(platform));
+  fl_value_append_take(result, fl_value_new_int(sharedCtx));
   return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
 }
 
@@ -695,7 +711,11 @@ static void thermion_flutter_plugin_handle_method_call(
     return;
   }
 
-  if (strcmp(method, "getDriverPlatform") == 0)
+  if (strcmp(method, "getRenderingContext") == 0)
+  {
+    response = handle_get_rendering_context(self, method_call);
+  }
+  else if (strcmp(method, "getDriverPlatform") == 0)
   {
     response = handle_get_driver_platform(self, method_call);
   }
