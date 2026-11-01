@@ -38,6 +38,7 @@
 #include "Log.hpp"
 #include "rendering/RenderManager.hpp"
 #include "PluginAPI.hpp"
+#include "c_api/FrameTelemetryApi.h"
 
 namespace thermion
 {
@@ -233,6 +234,9 @@ namespace thermion
         sumRenderMs = 0;
         totalSkips = 0;
       }
+    }
+    if (rendered) {
+      FrameTelemetry_record();
     }
     return rendered;
   }
