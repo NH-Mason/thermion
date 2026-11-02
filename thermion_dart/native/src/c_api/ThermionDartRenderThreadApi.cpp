@@ -1165,9 +1165,19 @@ extern "C"
 
   EMSCRIPTEN_KEEPALIVE void View_pickRenderThread(TView *tView, uint32_t requestId, uint32_t x, uint32_t y, PickCallback callback)
   {
-    auto *view = reinterpret_cast<View *>(tView);
-    view->pick(x, y, [=](filament::View::PickingQueryResult const &result)
-               { PROXY(callback(requestId, utils::Entity::smuggle(result.renderable), result.depth, result.fragCoords.x, result.fragCoords.y, result.fragCoords.z)); });
+    // Post to the render thread: View::pick links a query into a list that
+    // FRenderer::renderJob reads twice per frame without a lock (structure
+    // pass decision, then the Picking Resolve Pass). A query queued from
+    // another thread between the two reads makes the resolve pass read a
+    // never-created FrameGraph handle -> FrameGraph::assertValid panic.
+    std::packaged_task<void()> lambda(
+        [=]
+        {
+          auto *view = reinterpret_cast<View *>(tView);
+          view->pick(x, y, [=](filament::View::PickingQueryResult const &result)
+                     { PROXY(callback(requestId, utils::Entity::smuggle(result.renderable), result.depth, result.fragCoords.x, result.fragCoords.y, result.fragCoords.z)); });
+        });
+    auto fut = _renderThread->addTask(lambda, "View_pick");
   }
 
   EMSCRIPTEN_KEEPALIVE void View_setColorGradingRenderThread(TView *tView, TColorGrading *tColorGrading, uint32_t requestId, VoidCallback onComplete)
