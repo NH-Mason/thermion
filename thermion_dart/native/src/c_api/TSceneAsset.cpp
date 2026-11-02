@@ -90,7 +90,9 @@ extern "C"
     
     EMSCRIPTEN_KEEPALIVE TFilamentAsset *SceneAsset_getFilamentAsset(TSceneAsset *tSceneAsset) {
         auto sceneAsset = reinterpret_cast<SceneAsset *>(tSceneAsset);
-        if(sceneAsset->getType() != SceneAsset::SceneAssetType::Gltf) {
+        // A GltfSceneAssetInstance is Gltf-typed too but is not a
+        // GltfSceneAsset: the casts below are only valid on the primary asset.
+        if(sceneAsset->getType() != SceneAsset::SceneAssetType::Gltf || sceneAsset->isInstance()) {
             Log("Error - not a gltf asset");
             return nullptr;
         }
@@ -234,7 +236,7 @@ extern "C"
             auto *vertexBuffer = geometrySceneAsset->getVertexBuffer();
             return reinterpret_cast<TVertexBuffer *>(vertexBuffer);
         }
-        if (asset->getType() == SceneAsset::SceneAssetType::Gltf) {
+        if (asset->getType() == SceneAsset::SceneAssetType::Gltf && !asset->isInstance()) {
             auto gltfSceneAsset = reinterpret_cast<GltfSceneAsset *>(asset);
             auto *vertexBuffer = gltfSceneAsset->getPreservedVertexBuffer(primitiveIndex);
             return reinterpret_cast<TVertexBuffer *>(vertexBuffer);
@@ -249,7 +251,7 @@ extern "C"
             auto *indexBuffer = geometrySceneAsset->getIndexBuffer();
             return reinterpret_cast<TIndexBuffer *>(indexBuffer);
         }
-        if (asset->getType() == SceneAsset::SceneAssetType::Gltf) {
+        if (asset->getType() == SceneAsset::SceneAssetType::Gltf && !asset->isInstance()) {
             auto gltfSceneAsset = reinterpret_cast<GltfSceneAsset *>(asset);
             auto *indexBuffer = gltfSceneAsset->getPreservedIndexBuffer(primitiveIndex);
             return reinterpret_cast<TIndexBuffer *>(indexBuffer);
@@ -259,7 +261,10 @@ extern "C"
 
     EMSCRIPTEN_KEEPALIVE int SceneAsset_getPrimitiveOffsetForEntity(TSceneAsset *tSceneAsset, EntityId entity) {
         auto *asset = reinterpret_cast<SceneAsset*>(tSceneAsset);
-        if (asset->getType() != SceneAsset::SceneAssetType::Gltf) {
+        // Instances own no preserved geometry; reading the primary asset's
+        // map through an instance pointer read past the instance object
+        // (0xC0000005 from View.setStencilHighlight on an instance).
+        if (asset->getType() != SceneAsset::SceneAssetType::Gltf || asset->isInstance()) {
             return -1;
         }
         auto gltfSceneAsset = reinterpret_cast<GltfSceneAsset *>(asset);
@@ -270,7 +275,7 @@ extern "C"
 
     EMSCRIPTEN_KEEPALIVE void SceneAsset_releaseSourceData(TSceneAsset *tSceneAsset) {
         auto *asset = reinterpret_cast<SceneAsset*>(tSceneAsset);
-        if (asset->getType() != SceneAsset::SceneAssetType::Gltf) {
+        if (asset->getType() != SceneAsset::SceneAssetType::Gltf || asset->isInstance()) {
             Log("releaseSourceData only supported on glTF assets");
             return;
         }
@@ -280,7 +285,7 @@ extern "C"
 
     EMSCRIPTEN_KEEPALIVE void SceneAsset_setFlatShading(TSceneAsset *tSceneAsset, bool flatShading) {
         auto *asset = reinterpret_cast<SceneAsset*>(tSceneAsset);
-        if (asset->getType() != SceneAsset::SceneAssetType::Gltf) {
+        if (asset->getType() != SceneAsset::SceneAssetType::Gltf || asset->isInstance()) {
             Log("setFlatShading only supported on glTF assets");
             return;
         }
