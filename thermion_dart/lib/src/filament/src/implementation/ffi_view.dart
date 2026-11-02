@@ -360,17 +360,17 @@ class FFIView extends View<Pointer<TView>> {
 
     var viewport = await getViewport();
     y = viewport.height - y;
-    if (FILAMENT_WASM) {
-      View_pickRenderThread(
-        view,
-        pickRequestId,
-        x,
-        y,
-        _onPickResultHolder.pointer,
-      );
-    } else {
-      View_pick(view, pickRequestId, x, y, _onPickResultHolder.pointer);
-    }
+    // Always on the render thread: Filament's View::pick pushes onto the
+    // picking-query list the render thread walks and clears each frame,
+    // without a lock. Calling View_pick from the Dart thread raced it
+    // (HandleAllocator::assertValid abort on Windows after repeated picks).
+    View_pickRenderThread(
+      view,
+      pickRequestId,
+      x,
+      y,
+      _onPickResultHolder.pointer,
+    );
   }
 
   void _onPickResult(
