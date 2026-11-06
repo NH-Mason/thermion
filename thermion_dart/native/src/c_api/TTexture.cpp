@@ -1,3 +1,4 @@
+#include "rendering/EngineApiLock.hpp"
 
 
 #include <chrono>
@@ -501,6 +502,7 @@ namespace thermion
             TEngine *tEngine, uint8_t *data, size_t size, int32_t transferFunction,
             int32_t maxMipLevels)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *out = new Ktx2LoadResultImpl();
 
             auto *engine = reinterpret_cast<filament::Engine *>(tEngine);
@@ -633,54 +635,63 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE TTexture *Ktx2LoadResult_getTexture(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? reinterpret_cast<TTexture *>(result->texture) : nullptr;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getSourceTransfer(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->sourceTransfer : KTX2_TRANSFER_UNKNOWN;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getResolvedFormat(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->resolvedFormat : -1;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getHardwareSrgbDecode(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->hardwareSrgbDecode : 0;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getAlphaMode(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->alphaMode : KTX2_ALPHA_UNKNOWN;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getUploadedMipCount(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->uploadedMipCount : 0;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getSourceMipCount(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->sourceMipCount : 0;
         }
 
         EMSCRIPTEN_KEEPALIVE int32_t Ktx2LoadResult_getSourceChannelCount(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *result = reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
             return result ? result->sourceChannelCount : 0;
         }
 
         EMSCRIPTEN_KEEPALIVE void Ktx2LoadResult_destroy(TKtx2LoadResult *tResult)
         {
+            THERMION_ENGINE_API_GUARD;
             delete reinterpret_cast<Ktx2LoadResultImpl *>(tResult);
         }
 
@@ -690,6 +701,7 @@ namespace thermion
             uint32_t requestId,
             VoidCallback onTextureUploadComplete)
         {
+    THERMION_ENGINE_API_GUARD;
 
             auto engine = reinterpret_cast<filament::Engine *>(tEngine);
 
@@ -1012,6 +1024,7 @@ namespace thermion
             TTextureSamplerType tSamplerType,
             TTextureFormat tFormat)
         {
+            THERMION_ENGINE_API_GUARD;
             TRACE("Creating texture %dx%d (depth %d), sampler type %d, format %d tUsage %d, %d levels", width, height, depth, static_cast<int>(tSamplerType), static_cast<int>(tFormat), tUsage, levels);
             auto *engine = reinterpret_cast<::filament::Engine *>(tEngine);
             auto format = convertToFilamentFormat(tFormat);
@@ -1052,6 +1065,7 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE void Texture_setExternalImage(TEngine *tEngine, TTexture *tTexture, void *externalImage)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *engine = reinterpret_cast<filament::Engine *>(tEngine);
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             auto *extImg = static_cast<filament::backend::Platform::ExternalImage *>(externalImage);
@@ -1061,12 +1075,14 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE size_t Texture_getLevels(TTexture *tTexture)
         {
+            THERMION_ENGINE_API_GUARD;
             auto texture = reinterpret_cast<filament::Texture *>(tTexture);
             return texture->getLevels();
         }
 
         EMSCRIPTEN_KEEPALIVE bool Texture_loadImage(TEngine *tEngine, TTexture *tTexture, TLinearImage *tImage, TPixelDataFormat tBufferFormat, TPixelDataType tPixelDataType, int level)
         {
+            THERMION_ENGINE_API_GUARD;
             auto engine = reinterpret_cast<filament::Engine *>(tEngine);
             auto image = reinterpret_cast<::image::LinearImage *>(tImage);
             auto texture = reinterpret_cast<filament::Texture *>(tTexture);
@@ -1136,6 +1152,7 @@ namespace thermion
             void (*onRelease)(void *, size_t, void *),
             void *userData)
         {
+            THERMION_ENGINE_API_GUARD;
             auto engine = reinterpret_cast<filament::Engine *>(tEngine);
 
             auto texture = reinterpret_cast<filament::Texture *>(tTexture);
@@ -1171,30 +1188,35 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE uint32_t Texture_getWidth(TTexture *tTexture, uint32_t level)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             return texture->getWidth();
         }
 
         EMSCRIPTEN_KEEPALIVE uint32_t Texture_getHeight(TTexture *tTexture, uint32_t level)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             return texture->getHeight();
         }
 
         EMSCRIPTEN_KEEPALIVE uint32_t Texture_getDepth(TTexture *tTexture, uint32_t level)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             return texture->getDepth();
         }
 
         EMSCRIPTEN_KEEPALIVE TTextureFormat Texture_getFormat(TTexture *tTexture)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             return static_cast<TTextureFormat>(texture->getFormat());
         }
 
         EMSCRIPTEN_KEEPALIVE void Texture_generateMipMaps(TTexture *tTexture, TEngine *tEngine)
         {
+            THERMION_ENGINE_API_GUARD;
             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
             auto *engine = reinterpret_cast<filament::Engine *>(tEngine);
             texture->generateMipmaps(*engine);
@@ -1348,6 +1370,7 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE TTexture *RenderTarget_getColorTexture(TRenderTarget *tRenderTarget)
         {
+            THERMION_ENGINE_API_GUARD;
             auto renderTarget = reinterpret_cast<filament::RenderTarget *>(tRenderTarget);
             auto texture = renderTarget->getTexture(filament::RenderTarget::AttachmentPoint::COLOR0);
             return reinterpret_cast<TTexture *>(texture);
@@ -1355,6 +1378,7 @@ namespace thermion
 
         EMSCRIPTEN_KEEPALIVE TTexture *RenderTarget_getDepthTexture(TRenderTarget *tRenderTarget)
         {
+            THERMION_ENGINE_API_GUARD;
             auto renderTarget = reinterpret_cast<filament::RenderTarget *>(tRenderTarget);
             auto texture = renderTarget->getTexture(filament::RenderTarget::AttachmentPoint::DEPTH);
             return reinterpret_cast<TTexture *>(texture);
