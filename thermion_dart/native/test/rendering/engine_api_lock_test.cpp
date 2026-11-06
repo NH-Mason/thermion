@@ -88,7 +88,7 @@ static EntityId makeNode(EntityId parent) {
 
 // --- job-thread tasks (no user data in JobThread_addTask, so globals) ------
 static void setupTask() {
-    gEngine = Engine_create(5 /* filament::Engine::Backend::NOOP in Filament 1.77 (TBackend NOOP=4 maps to WEBGPU there) */, nullptr, nullptr, 1, false);
+    gEngine = Engine_create(5 /* TBackend BACKEND_NOOP */, nullptr, nullptr, 1, false);
     if (gEngine) {
         gTm = Engine_getTransformManager(gEngine);
         gEm = Engine_getEntityManager(gEngine);
