@@ -41,6 +41,7 @@
 #include "c_api/ThermionDartJobThreadApi.h"
 
 #include "rendering/JobThread.hpp"
+#include "rendering/EngineApiLock.hpp"
 #include "rendering/RenderManager.hpp"
 #include "Log.hpp"
 #include "MathUtils.hpp"
@@ -59,7 +60,8 @@ using namespace std::chrono_literals;
 #ifdef __EMSCRIPTEN__
 #define PROXY(call) rt->dispatchCallback([=]() { call; })
 #else
-#define PROXY(call) call
+// Dart completions run after the task releases the engine API lock.
+#define PROXY(call) ::thermion::deferDartCallback([=]() mutable { call; })
 #endif
 extern "C"
 {
