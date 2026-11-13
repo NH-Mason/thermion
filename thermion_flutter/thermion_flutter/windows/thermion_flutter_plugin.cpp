@@ -244,10 +244,14 @@ namespace thermion::tflutter::windows
         retiring = _retiringTextures.find(job.key()) != _retiringTextures.end();
       }
       if (!retiring) {
+        // Publish only a completed copy. Blit returns false when it skipped
+        // the frame or a bounded GPU wait timed out (the copy may still be
+        // writing the D3D texture); Flutter then keeps the previous frame.
+        bool frameReady = true;
         if (job.context) {
-          job.context->Blit(job.handle);
+          frameReady = job.context->Blit(job.handle);
         }
-        if (job.registrar) {
+        if (frameReady && job.registrar) {
           job.registrar->MarkTextureFrameAvailable(job.flutterTextureId);
         }
       }

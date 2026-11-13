@@ -46,7 +46,9 @@ namespace {
 // and this blit worker are statically linked into the same thermion_dart.dll
 // and therefore dereference the SAME bluevk globals (declared extern in
 // BlueVK.h), so interposing them here funnels both threads' submissions
-// through one lock. On multi-queue HW this shim is never installed.
+// through one lock. It is installed on multi-queue HW too: Blit holds this
+// mutex while it drains Filament's queues and copies, so Filament cannot
+// submit a new frame mid-copy (see the comment above Impl::Blit).
 std::mutex sQueueMutex;
 
 PFN_vkQueueSubmit     sRealQueueSubmit     = nullptr;
@@ -125,6 +127,12 @@ void InstallQueueSerializationShim() {
     }
 }
 
+// The un-shimmed vkQueueSubmit, for callers that already hold sQueueMutex
+// (calling the shimmed global there would self-deadlock on the mutex).
+PFN_vkQueueSubmit RealQueueSubmit() {
+    return sRealQueueSubmit ? sRealQueueSubmit : bluevk::vkQueueSubmit;
+}
+
 } // namespace
 
 class WindowsVulkanContext::Impl {
@@ -135,6 +143,9 @@ class WindowsVulkanContext::Impl {
                       << _d3dTextures.size() << " D3D textures / " << _renderTargetTextures.size() << " render targets remain" << std::endl;
             if (blitFence != VK_NULL_HANDLE) {
                 bluevk::vkDestroyFence(device, blitFence, nullptr);
+            }
+            for (VkFence f : _drainFences) {
+                bluevk::vkDestroyFence(device, f, nullptr);
             }
             _d3dContext = std::nullptr_t();
         }
@@ -263,6 +274,24 @@ class WindowsVulkanContext::Impl {
                 std::cout << "[ERROR] Failed to create blit fence" << std::endl;
             }
 
+            // Drain fences for every queue a Filament Engine may submit to
+            // (all requested queues except the blit's own). Created signaled
+            // so the first reset is valid.
+            for (uint32_t i = 0; i < _deviceQueueCount; i++) {
+                VkQueue q = VK_NULL_HANDLE;
+                bluevk::vkGetDeviceQueue(device, queueFamilyIndex, i, &q);
+                if (q == VK_NULL_HANDLE || q == queue) {
+                    continue;
+                }
+                VkFence f = VK_NULL_HANDLE;
+                if (bluevk::vkCreateFence(device, &fenceInfo, nullptr, &f) != VK_SUCCESS) {
+                    std::cout << "[ERROR] Failed to create blit drain fence" << std::endl;
+                    continue;
+                }
+                _filamentQueues.push_back(q);
+                _drainFences.push_back(f);
+            }
+
         }
 
         HANDLE CreateRenderingSurface(uint32_t width, uint32_t height, uint32_t left, uint32_t top) {
@@ -373,18 +402,42 @@ class WindowsVulkanContext::Impl {
             _pendingFirstBlit.erase(d3dTextureHandle);
         }
 
-        void Blit(HANDLE d3dTextureHandle) {
+        // Returns true only when the copy has completed on the GPU, i.e. the
+        // D3D texture now holds a whole new frame and the caller may tell
+        // Flutter a frame is available. On false the D3D texture still holds
+        // the previous frame (or a copy that is still in flight), so the
+        // caller must NOT publish it.
+        //
+        // Blit/render synchronisation (AoA fork, Windows only):
+        // On GPUs with 2+ graphics queues the blit runs on queue 1 while
+        // Filament renders on queue 0 (2+ for popout engines). Pipeline
+        // barriers do not order work across queues, so the copy could read
+        // the render target while Filament was still drawing it (torn,
+        // square-block frames) and the next frame could overwrite it mid-copy.
+        // Filament's Vulkan backend exposes no per-frame "render target done"
+        // semaphore for an offscreen render target (only the swapchain
+        // present() hook gets one), so instead the blit holds the
+        // process-wide queue mutex (sQueueMutex, now installed on all HW)
+        // for its whole duration:
+        //   1. drain every Filament queue: an empty vkQueueSubmit with a
+        //      fence signals only after all earlier work on that queue
+        //      finishes; wait for it (bounded);
+        //   2. submit the copy and wait for its fence (bounded).
+        // Filament cannot submit while we hold the mutex, so the copy reads
+        // only fully-finished frames and no new frame can write the render
+        // target until the copy is done. Any wait timing out returns false.
+        bool Blit(HANDLE d3dTextureHandle) {
             // Per-frame re-check: a later Filament Engine re-creation re-binds
             // the bluevk globals and would silently drop the shim. Idempotent.
-            if (queueSharedWithFilament) {
-                InstallQueueSerializationShim();
-            }
+            // Installed on multi-queue HW too: the blit sync below relies on
+            // every Filament submit going through sQueueMutex.
+            InstallQueueSerializationShim();
 
             // Skip the first Blit after texture creation.  The render
             // target has uninitialized contents until Filament renders
             // into it; blitting garbage produces visible jank.
             if (_pendingFirstBlit.erase(d3dTextureHandle)) {
-                return;
+                return false;
             }
 
             // Find the texture index for this handle
@@ -398,12 +451,12 @@ class WindowsVulkanContext::Impl {
 
             if (textureIndex == SIZE_MAX) {
                 ERROR("Texture handle not found");
-                return;
+                return false;
             }
 
             if (textureIndex >= _renderTargetTextures.size() || textureIndex >= _vulkanTextures.size()) {
                 ERROR("Texture index out of bounds");
-                return;
+                return false;
             }
 
             auto srcImage = _renderTargetTextures[textureIndex]->GetImage();
@@ -411,10 +464,41 @@ class WindowsVulkanContext::Impl {
             auto width = _d3dTextures[textureIndex]->GetWidth();
             auto height = _d3dTextures[textureIndex]->GetHeight();
 
-            VkResult result = bluevk::vkResetCommandBuffer(blitCommandBuffer, 0);
+            // Wait for any previous blit to complete. Done BEFORE resetting
+            // the command buffer: after a post-blit timeout the previous
+            // submit may still be pending, and resetting a pending command
+            // buffer is invalid.
+            //
+            // Bounded to 50 ms. With UINT64_MAX we deadlocked the whole
+            // app on Windows multi-viewer at sustained 60 fps × N
+            // viewers: Blit runs on the Flutter UI thread (called from
+            // ThermionFlutterPlugin::HandleMethodCall for
+            // markTextureFrameAvailable), the keyed-mutex-style fence
+            // chain between Vulkan (writer) and D3D11 (Flutter
+            // compositor reader on its own raster thread) needs the
+            // UI thread to pump Win32 messages for the compositor to
+            // advance, and the GPU can't signal this fence until the
+            // compositor has consumed the previous frame. Three-way
+            // wait — UI thread → GPU → compositor → UI thread.
+            //
+            // On timeout, skip this frame's blit entirely so the UI
+            // thread returns, the Win32 message pump dispatches,
+            // Flutter's compositor drains, and the next Blit retries.
+            // Visual effect is one stale frame on a backed-up GPU;
+            // far preferable to a hard hang.
+            VkResult result = bluevk::vkWaitForFences(device, 1, &blitFence, VK_TRUE, 50'000'000);
+            if (result == VK_TIMEOUT) {
+                return false;
+            }
+            if (result != VK_SUCCESS) {
+                std::cerr << "vkWaitForFences failed: " << result << std::endl;
+                return false;
+            }
+
+            result = bluevk::vkResetCommandBuffer(blitCommandBuffer, 0);
             if (result != VK_SUCCESS) {
                 std::cout << "Failed to reset command buffer: " << result << std::endl;
-                return;
+                return false;
             }
 
             // Begin command buffer
@@ -425,7 +509,7 @@ class WindowsVulkanContext::Impl {
             result = bluevk::vkBeginCommandBuffer(blitCommandBuffer, &beginInfo);
             if (result != VK_SUCCESS) {
                 std::cout << "Failed to begin command buffer: " << result << std::endl;
-                return;
+                return false;
             }
 
             // Blit only the specific texture pair
@@ -514,7 +598,7 @@ class WindowsVulkanContext::Impl {
             result = bluevk::vkEndCommandBuffer(blitCommandBuffer);
             if (result != VK_SUCCESS) {
                 std::cout << "Failed to end command buffer: " << result << std::endl;
-                return;
+                return false;
             }
 
             // Setup Standard Submit Info
@@ -526,59 +610,78 @@ class WindowsVulkanContext::Impl {
             // submitInfo.signalSemaphoreCount = 1;
             // submitInfo.pSignalSemaphores = &sharedSemaphore;
 
-            // Wait for any previous blit to complete and reset fence.
-            //
-            // Bounded to 50 ms. With UINT64_MAX we deadlocked the whole
-            // app on Windows multi-viewer at sustained 60 fps × N
-            // viewers: Blit runs on the Flutter UI thread (called from
-            // ThermionFlutterPlugin::HandleMethodCall for
-            // markTextureFrameAvailable), the keyed-mutex-style fence
-            // chain between Vulkan (writer) and D3D11 (Flutter
-            // compositor reader on its own raster thread) needs the
-            // UI thread to pump Win32 messages for the compositor to
-            // advance, and the GPU can't signal this fence until the
-            // compositor has consumed the previous frame. Three-way
-            // wait — UI thread → GPU → compositor → UI thread.
-            //
-            // On timeout, skip this frame's blit entirely so the UI
-            // thread returns, the Win32 message pump dispatches,
-            // Flutter's compositor drains, and the next Blit retries.
-            // Visual effect is one stale frame on a backed-up GPU;
-            // far preferable to a hard hang.
-            result = bluevk::vkWaitForFences(device, 1, &blitFence, VK_TRUE, 50'000'000);
-            if (result == VK_TIMEOUT) {
-                return;
-            }
-            if (result != VK_SUCCESS) {
-                std::cerr << "vkWaitForFences failed: " << result << std::endl;
-                return;
-            }
-            bluevk::vkResetFences(device, 1, &blitFence);
-
-            result = bluevk::vkQueueSubmit(queue, 1, &submitInfo, blitFence);
-            if (result != VK_SUCCESS) {
-                std::cerr << "vkQueueSubmit failed: " << result << std::endl;
-                return;
-            }
-
-            // Wait for blit to complete before returning.
-            //
-            // Bounded to 50 ms for the same reason as above. On
-            // timeout we return without an error: the submit has
-            // been accepted by the queue, the keyed mutex on the
-            // shared texture will serialise D3D11's read on its own
-            // thread, and the *next* call's pre-submit wait above
-            // will catch up. Returning unblocks the UI thread.
+            // Hold the queue mutex from the Filament-queue drain through the
+            // post-blit fence wait (see the comment above Blit). Released at
+            // the end of this scope, before the graveyard drain.
             bool postBlitTimedOut = false;
-            result = bluevk::vkWaitForFences(device, 1, &blitFence, VK_TRUE, 50'000'000);
-            if (result == VK_TIMEOUT) {
-                postBlitTimedOut = true;
-                std::cerr << "vkWaitForFences (post-blit) timed out after 50 ms; "
-                             "GPU still processing. Returning to unblock UI thread; "
-                             "next Blit will sync."
-                          << std::endl;
-            } else if (result != VK_SUCCESS) {
-                std::cerr << "vkWaitForFences (post-blit) failed: " << result << std::endl;
+            bool frameReady = false;
+            {
+                std::lock_guard<std::mutex> queueLock(sQueueMutex);
+
+                // A drain from an earlier Blit that timed out may still be
+                // pending; a pending fence must not be reset.
+                if (_drainPending) {
+                    result = bluevk::vkWaitForFences(device, (uint32_t)_drainFences.size(),
+                                                     _drainFences.data(), VK_TRUE, 50'000'000);
+                    if (result != VK_SUCCESS) {
+                        return false;  // Filament still busy: keep the previous frame
+                    }
+                    _drainPending = false;
+                }
+                if (!_drainFences.empty()) {
+                    bluevk::vkResetFences(device, (uint32_t)_drainFences.size(), _drainFences.data());
+                    for (size_t i = 0; i < _filamentQueues.size(); i++) {
+                        result = RealQueueSubmit()(_filamentQueues[i], 0, nullptr, _drainFences[i]);
+                        if (result != VK_SUCCESS) {
+                            std::cerr << "Blit: drain submit failed: " << result << std::endl;
+                            // Fences [0, i) were submitted and may still be
+                            // pending; settle them so they can be reset next
+                            // time. Fences [i, n) are reset and never submitted.
+                            _drainPending = i > 0 &&
+                                bluevk::vkWaitForFences(device, (uint32_t)i, _drainFences.data(),
+                                                        VK_TRUE, 50'000'000) != VK_SUCCESS;
+                            return false;
+                        }
+                    }
+                    _drainPending = true;
+                    result = bluevk::vkWaitForFences(device, (uint32_t)_drainFences.size(),
+                                                     _drainFences.data(), VK_TRUE, 50'000'000);
+                    if (result != VK_SUCCESS) {
+                        std::cerr << "Blit: Filament queue drain did not finish in 50 ms ("
+                                  << result << "); skipping this frame" << std::endl;
+                        return false;
+                    }
+                    _drainPending = false;
+                }
+
+                bluevk::vkResetFences(device, 1, &blitFence);
+
+                result = RealQueueSubmit()(queue, 1, &submitInfo, blitFence);
+                if (result != VK_SUCCESS) {
+                    std::cerr << "vkQueueSubmit failed: " << result << std::endl;
+                    return false;
+                }
+
+                // Wait for blit to complete before returning.
+                //
+                // Bounded to 50 ms for the same reason as above. On
+                // timeout the submit stays queued and the *next* call's
+                // pre-submit wait catches up. There is no keyed mutex on
+                // the shared D3D texture, so a timed-out copy may still
+                // be writing it: return false so the caller does NOT mark
+                // the frame available and Flutter keeps the previous one.
+                result = bluevk::vkWaitForFences(device, 1, &blitFence, VK_TRUE, 50'000'000);
+                if (result == VK_TIMEOUT) {
+                    postBlitTimedOut = true;
+                    std::cerr << "vkWaitForFences (post-blit) timed out after 50 ms; "
+                                 "GPU still processing. Frame not published; "
+                                 "next Blit will sync."
+                              << std::endl;
+                } else if (result != VK_SUCCESS) {
+                    std::cerr << "vkWaitForFences (post-blit) failed: " << result << std::endl;
+                } else {
+                    frameReady = true;
+                }
             }
 
             // Drain the graveyard after enough Blit cycles.
@@ -618,6 +721,7 @@ class WindowsVulkanContext::Impl {
                           << _graveyardD3D.size() << ")"
                           << std::endl;
             }
+            return frameReady;
         }
 
         void readPixelsFromImage(
@@ -918,7 +1022,15 @@ class WindowsVulkanContext::Impl {
         VkCommandBuffer blitCommandBuffer = VK_NULL_HANDLE;
         VkFence blitFence = VK_NULL_HANDLE;
         VkQueue queue = VK_NULL_HANDLE;
-        bool queueSharedWithFilament = false;  // set from CommandResources; gates the serialization shim
+        bool queueSharedWithFilament = false;  // set from CommandResources (informational; the shim is now always installed)
+
+        // Blit/render sync (see Blit). Every device queue other than the
+        // blit's own one may be used by a Filament Engine (queue 0 = first
+        // engine, 2+ = popout engines). One fence per such queue is used to
+        // drain it (empty submit + bounded wait) before the blit reads.
+        std::vector<VkQueue> _filamentQueues;
+        std::vector<VkFence> _drainFences;
+        bool _drainPending = false;  // a drain submit is still pending on _drainFences
 
         std::unique_ptr<thermion::windows::d3d::D3DContext> _d3dContext;
 
@@ -971,8 +1083,8 @@ void* WindowsVulkanContext::GetSharedContext() {
     return pImpl->GetSharedContext();
 }
 
-void WindowsVulkanContext::Blit(HANDLE d3dTextureHandle) {
-    pImpl->Blit(d3dTextureHandle);
+bool WindowsVulkanContext::Blit(HANDLE d3dTextureHandle) {
+    return pImpl->Blit(d3dTextureHandle);
 }
 
 void WindowsVulkanContext::ClearPendingFirstBlit(HANDLE d3dTextureHandle) {
