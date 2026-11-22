@@ -63,8 +63,10 @@ fragment {
             float insideEdge = center * (1.0 - minNeighbor);
             float edge = max(outsideEdge, insideEdge);
 
-            material.baseColor.rgb = outlineColor;
-            material.baseColor.a = edge;
+            // Premultiplied: `transparent` blending is src + dst * (1 - src.a)
+            // and unlit does not premultiply, so rgb must scale with edge or
+            // every pixel (edge = 0 included) gets outlineColor added.
+            material.baseColor = vec4(outlineColor * edge, edge);
         } else {
             // Composite mode: outside-only edges (pixel-perfect alignment).
             float edge = (1.0 - center) * maxNeighbor;
