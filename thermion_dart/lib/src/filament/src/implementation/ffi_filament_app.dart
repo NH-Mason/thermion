@@ -1131,13 +1131,40 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
     // swapchain readPixels() below, it ends the frame and clears the active
     // SwapChain, tripping Filament's "readPixels() ... must be called after
     // beginFrame() and before endFrame()" precondition. Pause ticking across
-    // the critical section and resume it in the finally.
+    // the critical section and resume it on EVERY exit path (return or throw).
     final pauseTicking = FILAMENT_SINGLE_THREADED;
     if (pauseTicking) {
       RenderManager_setPaused(renderManager.getNativeHandle(), true);
-      await Future.delayed(Duration(milliseconds: 17)); // TODO - replace this
     }
+    try {
+      if (pauseTicking) {
+        await Future.delayed(Duration(milliseconds: 17)); // TODO - replace this
+      }
+      return await _captureWhilePaused(
+        swapChain,
+        view: view,
+        captureRenderTarget: captureRenderTarget,
+        pixelDataFormat: pixelDataFormat,
+        pixelDataType: pixelDataType,
+        beforeRender: beforeRender,
+        render: render,
+      );
+    } finally {
+      if (pauseTicking) {
+        RenderManager_setPaused(renderManager.getNativeHandle(), false);
+      }
+    }
+  }
 
+  Future<List<(View, Uint8List)>> _captureWhilePaused(
+    SwapChain? swapChain, {
+    View? view,
+    required bool captureRenderTarget,
+    required PixelDataFormat pixelDataFormat,
+    required PixelDataType pixelDataType,
+    Future Function(View)? beforeRender,
+    required bool render,
+  }) async {
     if (swapChain == null) {
       if (_swapChains.isEmpty) {
         throw Exception("No swapchains registered");
@@ -1163,9 +1190,6 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
     }
 
     if (!beginFrame) {
-      if (pauseTicking) {
-        RenderManager_setPaused(renderManager.getNativeHandle(), false);
-      }
       throw Exception("Failed to begin frame");
     }
 
@@ -1342,10 +1366,6 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
         stackRestore(stackPtr);
       }
       return result;
-    }
-
-    if (pauseTicking) {
-      RenderManager_setPaused(renderManager.getNativeHandle(), false);
     }
 
     return pixelBuffers;
