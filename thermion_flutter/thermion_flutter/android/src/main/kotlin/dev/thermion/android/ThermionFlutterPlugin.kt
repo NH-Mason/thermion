@@ -6,6 +6,7 @@ import android.graphics.*
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
@@ -44,7 +45,8 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       // GLES driver and Impeller's Vulkan import can still hold fences on
       // ImageReader buffers for a frame or two after eglDestroySurface.
       const val RELEASE_DELAY_FRAMES = 5
-      const val RELEASE_FALLBACK_MS = 250L
+      const val RELEASE_MIN_PARK_MS = 150L
+      const val RELEASE_FALLBACK_MS = 1000L
   }
 
   private lateinit var channel : MethodChannel
@@ -63,6 +65,10 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
           surfaceProducer?.setCallback(null)
           surface?.release()
           surface = null
+          // Only the window Dart's descriptor was created with is released, and
+          // only here: descriptor.windowHandle never follows onSurfaceAvailable
+          // rebinds, so freeing it earlier is a use-after-free. The windows from
+          // those rebinds stay leaked (pre-existing).
           NativeWindowHelper.releaseNativeWindow(nativeWindow)
           nativeWindow = 0L
           surfaceProducer?.release()
@@ -79,26 +85,33 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private val pendingReleases: MutableSet<TextureEntry> =
       Collections.newSetFromMap(IdentityHashMap())
 
-  private fun releaseAfterFrames(entry: TextureEntry, frames: Int) {
+  private fun releaseParked(entry: TextureEntry) {
+      if (!pendingReleases.remove(entry)) return
+      Log.d(TAG, "releasing parked surface")
+      entry.release()
+  }
+
+  // Release once RELEASE_DELAY_FRAMES frames AND RELEASE_MIN_PARK_MS have
+  // passed (frames alone are ~8 ms each at 120 Hz).
+  private fun releaseWhenSettled(entry: TextureEntry, parkedAt: Long, frames: Int) {
       if (!pendingReleases.contains(entry)) return
-      if (frames <= 0) {
-          pendingReleases.remove(entry)
-          Log.d(TAG, "releasing parked surface")
-          entry.release()
+      if (frames >= RELEASE_DELAY_FRAMES &&
+          SystemClock.uptimeMillis() - parkedAt >= RELEASE_MIN_PARK_MS) {
+          releaseParked(entry)
           return
       }
       Choreographer.getInstance().postFrameCallback {
-          releaseAfterFrames(entry, frames - 1)
+          releaseWhenSettled(entry, parkedAt, frames + 1)
       }
   }
 
-  // Frame callbacks never fire while the app is backgrounded; release on a
-  // timer too. Whichever path runs first wins, the other sees the entry gone.
+  // Frame callbacks never fire while the app is backgrounded, so a timer
+  // releases regardless. Whichever path runs first wins (idempotent).
   private fun scheduleRelease(entry: TextureEntry) {
       pendingReleases.add(entry)
-      releaseAfterFrames(entry, RELEASE_DELAY_FRAMES)
+      releaseWhenSettled(entry, SystemClock.uptimeMillis(), 0)
       Handler(Looper.getMainLooper()).postDelayed({
-          releaseAfterFrames(entry, 0)
+          releaseParked(entry)
       }, RELEASE_FALLBACK_MS)
   }
 
@@ -107,12 +120,10 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private fun notifyDartBeforeReleasingSurface(
       method: String,
       arguments: Any,
-      surface: Surface?,
-      nativeWindow: Long
+      surface: Surface?
   ) {
       fun releaseOld() {
           surface?.release()
-          NativeWindowHelper.releaseNativeWindow(nativeWindow)
       }
       channel.invokeMethod(method, arguments, object : MethodChannel.Result {
           override fun success(result: Any?) {
@@ -230,14 +241,11 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                         override fun onSurfaceCleanup() {
                             val entry = textures[flutterTextureId] ?: return
                             val surfaceToRelease = entry.surface
-                            val windowToRelease = entry.nativeWindow
                             entry.surface = null
-                            entry.nativeWindow = 0L
                             notifyDartBeforeReleasingSurface(
                                 "onSurfaceCleanup",
                                 flutterTextureId,
-                                surfaceToRelease,
-                                windowToRelease
+                                surfaceToRelease
                             )
                         }
 
@@ -271,17 +279,14 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                             }
 
                             val surfaceToRelease = entry.surface
-                            val windowToRelease = entry.nativeWindow
                             entry.surface = newSurface
-                            entry.nativeWindow = newNativeWindowPtr
                             notifyDartBeforeReleasingSurface(
                                 "onSurfaceAvailable",
                                 listOf(
                                     flutterTextureId,
                                     newNativeWindowPtr
                                 ),
-                                surfaceToRelease,
-                                windowToRelease
+                                surfaceToRelease
                             )
                         }
                     }
