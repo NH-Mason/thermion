@@ -51,6 +51,12 @@ namespace thermion::vulkan::windows {
         // Blit should not be skipped.
         void ClearPendingFirstBlit(HANDLE d3dTextureHandle);
 
+        // Pixel-buffer presentation (experiment): reads the surface's last
+        // completed frame back as RGBA8 so Flutter never opens a shared
+        // texture. Call only after a Blit of the same handle returned true.
+        bool ReadbackPresentation(HANDLE surfaceHandle, std::vector<uint8_t>& rgba,
+                                  uint32_t& width, uint32_t& height);
+
         void* GetSharedContext();
 
         void readPixelsFromImage(

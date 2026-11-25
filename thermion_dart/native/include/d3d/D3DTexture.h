@@ -41,6 +41,10 @@ class DLL_EXPORT D3DTexture {
 
     // Completion of the last presentation copy (reads the Vulkan side).
     Microsoft::WRL::ComPtr<ID3D11Query> copyDone;
+
+    // CPU-readable copy of the presentation texture, created on first use by
+    // the pixel-buffer presentation path (D3DContext::ReadbackRGBA).
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
        
     void SaveToBMP(const char* filename);
 

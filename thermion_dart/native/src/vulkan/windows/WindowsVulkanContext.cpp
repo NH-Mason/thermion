@@ -405,6 +405,18 @@ class WindowsVulkanContext::Impl {
             _pendingFirstBlit.erase(d3dTextureHandle);
         }
 
+        bool ReadbackPresentation(HANDLE d3dTextureHandle, std::vector<uint8_t>& rgba,
+                                  uint32_t& width, uint32_t& height) {
+            for (auto &tex : _d3dTextures) {
+                if (tex->GetTextureHandle() == d3dTextureHandle) {
+                    width = tex->GetWidth();
+                    height = tex->GetHeight();
+                    return _d3dContext->ReadbackRGBA(tex.get(), rgba, 50);
+                }
+            }
+            return false;
+        }
+
         bool Blit(HANDLE d3dTextureHandle) {
             // Per-frame re-check: a later Filament Engine re-creation re-binds
             // the bluevk globals and would silently drop the shim. Idempotent.
@@ -1151,6 +1163,11 @@ bool WindowsVulkanContext::Blit(HANDLE d3dTextureHandle) {
 
 void WindowsVulkanContext::ClearPendingFirstBlit(HANDLE d3dTextureHandle) {
     pImpl->ClearPendingFirstBlit(d3dTextureHandle);
+}
+
+bool WindowsVulkanContext::ReadbackPresentation(HANDLE d3dTextureHandle, std::vector<uint8_t>& rgba,
+                                                uint32_t& width, uint32_t& height) {
+    return pImpl->ReadbackPresentation(d3dTextureHandle, rgba, width, height);
 }
 
 void WindowsVulkanContext::readPixelsFromImage(

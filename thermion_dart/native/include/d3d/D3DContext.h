@@ -10,6 +10,9 @@
 #include <wrl.h>
 #include <wrl/client.h>
 
+#include <memory>
+#include <vector>
+
 #include "d3d/D3DTexture.h"
 
 namespace thermion::windows::d3d { 
@@ -41,6 +44,11 @@ namespace thermion::windows::d3d {
 
             // Polls `query` (flushing) for up to `timeoutMs`. True when done.
             bool WaitQuery(ID3D11Query *query, int timeoutMs);
+
+            // Reads the presentation texture back as tightly packed RGBA8
+            // (Flutter's pixel-buffer format) into `rgba`. Bounded wait;
+            // false when the copy did not finish in time.
+            bool ReadbackRGBA(D3DTexture *texture, std::vector<uint8_t> &rgba, int timeoutMs);
             
             bool IsValid() {
                 return _D3D11Device;

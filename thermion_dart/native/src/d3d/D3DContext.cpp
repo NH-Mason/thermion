@@ -221,6 +221,52 @@ namespace thermion::windows::d3d
         return texture->copyDone != nullptr;
     }
 
+    bool D3DContext::ReadbackRGBA(D3DTexture *texture, std::vector<uint8_t> &rgba, int timeoutMs)
+    {
+        auto *source = texture ? texture->GetPresentationTexture() : nullptr;
+        if (!source) {
+            return false;
+        }
+        if (!texture->staging) {
+            D3D11_TEXTURE2D_DESC desc{};
+            source->GetDesc(&desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            desc.MiscFlags = 0;
+            if (FAILED(_D3D11Device->CreateTexture2D(&desc, nullptr, &texture->staging))) {
+                std::cerr << "D3DContext: staging texture creation failed" << std::endl;
+                return false;
+            }
+        }
+        _D3D11DeviceContext->CopyResource(texture->staging.Get(), source);
+        auto query = InsertEventQuery();
+        if (!WaitQuery(query.Get(), timeoutMs)) {
+            return false;
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(_D3D11DeviceContext->Map(texture->staging.Get(), 0, D3D11_MAP_READ,
+                                            D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped))) {
+            return false;
+        }
+        const uint32_t width = texture->GetWidth();
+        const uint32_t height = texture->GetHeight();
+        rgba.resize(static_cast<size_t>(width) * height * 4);
+        for (uint32_t y = 0; y < height; y++) {
+            const uint8_t *src = static_cast<const uint8_t *>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
+            uint8_t *dst = rgba.data() + static_cast<size_t>(y) * width * 4;
+            for (uint32_t x = 0; x < width; x++) {
+                // BGRA -> RGBA
+                dst[x * 4 + 0] = src[x * 4 + 2];
+                dst[x * 4 + 1] = src[x * 4 + 1];
+                dst[x * 4 + 2] = src[x * 4 + 0];
+                dst[x * 4 + 3] = src[x * 4 + 3];
+            }
+        }
+        _D3D11DeviceContext->Unmap(texture->staging.Get(), 0);
+        return true;
+    }
+
     bool D3DContext::WaitQuery(ID3D11Query *query, int timeoutMs)
     {
         if (!query) {

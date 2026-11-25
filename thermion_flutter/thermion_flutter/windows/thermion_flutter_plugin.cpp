@@ -73,6 +73,22 @@ namespace thermion::tflutter::windows
   // instance (engine) is destroyed.
   constexpr int kShutdownGraveyardDrainMs = 500;
 
+  // EXPERIMENT (THERMION_WINDOWS_PIXEL_BUFFER=1): present through a CPU
+  // pixel buffer instead of a DXGI shared handle, so Flutter's ANGLE device
+  // shares no resource with any other device. Discriminates the NVIDIA
+  // nvwgf2umx crash on ANGLE's command worker; costs a readback per frame.
+  static bool UsePixelBufferPresentation() {
+    static const bool enabled = [] {
+      char value[8] = {0};
+      const DWORD n = GetEnvironmentVariableA("THERMION_WINDOWS_PIXEL_BUFFER", value, sizeof(value));
+      const bool on = n > 0 && value[0] == '1';
+      std::cerr << "[WinInterop] presentation path: "
+                << (on ? "pixel buffer (no shared texture)" : "DXGI shared handle") << std::endl;
+      return on;
+    }();
+    return enabled;
+  }
+
   // Static member initialization for Dart API DL
   bool ThermionFlutterPlugin::_dartApiInitialized = false;
 
@@ -231,6 +247,33 @@ namespace thermion::tflutter::windows
   static std::atomic<bool> _blitWorkerShouldStop{false};
   static int _pluginInstanceCount = 0;
 
+  // Pixel-buffer presentation: after a completed blit of `handle`, read it
+  // back into the texture's pixel buffer. True (nothing to do) on the shared
+  // handle path. Caller holds _contextMutex.
+  static bool PublishPixelsLocked(
+      thermion::vulkan::windows::WindowsVulkanContext *context,
+      flutter::TextureRegistrar *registrar, int64_t flutterTextureId,
+      HANDLE handle) {
+    if (!UsePixelBufferPresentation()) {
+      return true;
+    }
+    for (auto &texture : _flutterTextures) {
+      if (texture->GetFlutterTextureId() != flutterTextureId ||
+          texture->GetOwner() != registrar) {
+        continue;
+      }
+      uint32_t width = 0;
+      uint32_t height = 0;
+      if (!context->ReadbackPresentation(handle, texture->Scratch(), width,
+                                         height)) {
+        return false;
+      }
+      texture->CommitScratch(width, height);
+      return true;
+    }
+    return false;
+  }
+
   static void BlitWorkerLoop() {
     while (true) {
       BlitJob job;
@@ -258,7 +301,9 @@ namespace thermion::tflutter::windows
         // Publish only a completed copy. When Blit skips the frame or its
         // fence wait times out, the shared texture may hold a partial copy,
         // so Flutter keeps showing the previous frame instead.
-        const bool copied = job.context && job.context->Blit(job.handle);
+        const bool copied = job.context && job.context->Blit(job.handle) &&
+                            PublishPixelsLocked(job.context, job.registrar,
+                                                job.flutterTextureId, job.handle);
         if (copied && job.registrar) {
           job.registrar->MarkTextureFrameAvailable(job.flutterTextureId);
         }
@@ -486,7 +531,8 @@ namespace thermion::tflutter::windows
 
     auto externalImage = _context->CreateExternalImageForSurface(d3dHandle);
 
-    auto flutterTexture = std::make_unique<FlutterD3DTexture>(d3dHandle, width, height);
+    auto flutterTexture = std::make_unique<FlutterD3DTexture>(
+        d3dHandle, width, height, UsePixelBufferPresentation());
 
     auto flutterTextureId = _textureRegistrar->RegisterTexture(flutterTexture->GetFlutterTexture());
     flutterTexture->SetFlutterTextureId(flutterTextureId);
@@ -817,12 +863,18 @@ namespace thermion::tflutter::windows
             // Blit OLD handle — old RT VkImage is still valid because
             // Dart deferred its Filament texture cleanup.
             // Flutter keeps showing last valid frame via old D3D texture.
-            _context->Blit(swap.oldD3DHandle);
+            if (_context->Blit(swap.oldD3DHandle)) {
+              PublishPixelsLocked(_context, _textureRegistrar,
+                                  *flutterTextureId, swap.oldD3DHandle);
+            }
           } else {
             // Frame 2+: new RT has valid content from previous render.
             // Blit new handle, swap descriptor, retire old textures.
             _context->ClearPendingFirstBlit(swap.newD3DHandle);
-            _context->Blit(swap.newD3DHandle);
+            if (_context->Blit(swap.newD3DHandle)) {
+              PublishPixelsLocked(_context, _textureRegistrar,
+                                  *flutterTextureId, swap.newD3DHandle);
+            }
 
             (*it)->SwapDescriptor(swap.newD3DHandle, swap.width, swap.height);
             _swapRetiredSurfaces.push_back(SwapRetiredSurface{

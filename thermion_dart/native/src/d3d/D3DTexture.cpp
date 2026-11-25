@@ -23,6 +23,7 @@ namespace thermion::windows::d3d
 
   D3DTexture::~D3DTexture() {
     copyDone.Reset();
+    staging.Reset();
     if (_vulkanSideHandle) {
       CloseHandle(_vulkanSideHandle);
       _vulkanSideHandle = nullptr;

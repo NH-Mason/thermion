@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include <flutter/texture_registrar.h>
 #include <flutter_texture_registrar.h>
@@ -11,7 +12,11 @@ namespace thermion::tflutter::windows {
 
     class FlutterD3DTexture {
         public:
-            FlutterD3DTexture(HANDLE d3dTexture2DHandle, uint32_t width, uint32_t height);
+            // `pixelBuffer`: register a CPU pixel-buffer texture instead of a
+            // DXGI shared handle, so Flutter's ANGLE device never opens a
+            // texture shared with another device (experiment, see plugin).
+            FlutterD3DTexture(HANDLE d3dTexture2DHandle, uint32_t width, uint32_t height,
+                              bool pixelBuffer = false);
             ~FlutterD3DTexture();
             ::flutter::TextureVariant* GetFlutterTexture();
             HANDLE GetD3DTextureHandle();
@@ -35,7 +40,20 @@ namespace thermion::tflutter::windows {
             // counted after a SwapDescriptor is guaranteed to see the new
             // handle (and ANGLE then drops its surface for the old one).
             uint64_t GetFetchCount();
+
+            // Pixel-buffer mode only. The blit worker fills Scratch() (it
+            // is the only writer) and CommitScratch() publishes it.
+            bool IsPixelBuffer() const { return _pixelBufferMode; }
+            std::vector<uint8_t> &Scratch() { return _scratch; }
+            void CommitScratch(uint32_t width, uint32_t height);
         private:
+            const FlutterDesktopPixelBuffer *AcquirePixels();
+            static void ReleasePixels(void *context);
+            bool _pixelBufferMode = false;
+            std::mutex _pixelMutex;  // held from AcquirePixels to ReleasePixels
+            std::vector<uint8_t> _pixels;
+            std::vector<uint8_t> _scratch;
+            FlutterDesktopPixelBuffer _pixelBuffer{};
             uint32_t _width;
             uint32_t _height;
             std::unique_ptr<FlutterDesktopGpuSurfaceDescriptor> _textureDescriptor = nullptr;
