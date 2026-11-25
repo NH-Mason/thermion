@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -28,6 +29,12 @@ namespace thermion::tflutter::windows {
             // Flutter's GpuSurfaceTexture callback returns the descriptor
             // pointer each frame; after this call it will see the new handle.
             void SwapDescriptor(HANDLE newHandle, uint32_t width, uint32_t height);
+
+            // How many times Flutter's raster thread has fetched the
+            // descriptor. Incremented under the descriptor lock, so a fetch
+            // counted after a SwapDescriptor is guaranteed to see the new
+            // handle (and ANGLE then drops its surface for the old one).
+            uint64_t GetFetchCount();
         private:
             uint32_t _width;
             uint32_t _height;
@@ -37,6 +44,7 @@ namespace thermion::tflutter::windows {
             ::flutter::TextureRegistrar* _owner = nullptr;
             HANDLE _d3dTexture2DHandle;
             std::mutex _descriptorMutex;
+            std::atomic<uint64_t> _fetchCount{0};
     };
 }
 

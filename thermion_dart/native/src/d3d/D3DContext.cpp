@@ -1,5 +1,7 @@
 #include "d3d/D3DContext.h"
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 namespace thermion::windows::d3d
 {
@@ -68,7 +70,12 @@ namespace thermion::windows::d3d
                    << std::endl;
 
         hr = ::D3D11CreateDevice(
-            adapter_, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_BGRA_SUPPORT, feature_levels.begin(),
+            // No driver worker threads on this device: the NVIDIA crash is a
+            // race between threaded-driver consumers of a shared resource,
+            // and this device only issues one small copy per frame.
+            adapter_, D3D_DRIVER_TYPE_UNKNOWN, 0,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
+            feature_levels.begin(),
             static_cast<UINT>(feature_levels.size()), D3D11_SDK_VERSION,
             &_D3D11Device, 0, &_D3D11DeviceContext);
 
@@ -180,13 +187,101 @@ namespace thermion::windows::d3d
         _D3D11DeviceContext->ClearRenderTargetView(rtv, black);
         rtv->Release();
 
+        // Second texture, same description, for Vulkan to import and write.
+        // Vulkan and ANGLE never share a resource: Vulkan -> (this) -> our
+        // D3D11 CopyResource -> presentation texture -> ANGLE.
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> vulkanSide;
+        hr = _D3D11Device->CreateTexture2D(&d3d11_texture2D_desc, nullptr, &vulkanSide);
+        if (FAILED(hr)) {
+            std::cout << "Failed to create Vulkan-side D3D texture (" << hr << ")" << std::endl;
+            return nullptr;
+        }
+        Microsoft::WRL::ComPtr<IDXGIResource1> vulkanSideResource;
+        HANDLE vulkanSideHandle = nullptr;
+        if (FAILED(vulkanSide.As(&vulkanSideResource)) ||
+            FAILED(vulkanSideResource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr,
+                                                          &vulkanSideHandle))) {
+            std::cout << "Failed to share Vulkan-side D3D texture" << std::endl;
+            return nullptr;
+        }
+        texture->SetVulkanSide(vulkanSide, vulkanSideHandle);
+
         Flush();
         return texture;
+    }
+
+    bool D3DContext::CopyForPresentation(D3DTexture *texture)
+    {
+        if (!texture || !texture->GetVulkanSideTexture()) {
+            return false;
+        }
+        _D3D11DeviceContext->CopyResource(texture->GetPresentationTexture(),
+                                          texture->GetVulkanSideTexture());
+        texture->copyDone = InsertEventQuery();
+        return texture->copyDone != nullptr;
+    }
+
+    bool D3DContext::WaitQuery(ID3D11Query *query, int timeoutMs)
+    {
+        if (!query) {
+            return true;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeoutMs);
+        while (true) {
+            BOOL done = FALSE;
+            const HRESULT hr = _D3D11DeviceContext->GetData(query, &done, sizeof(done), 0);
+            if (hr == S_OK) {
+                return done == TRUE;
+            }
+            if (FAILED(hr)) {
+                return true; // device lost: nothing can still be pending
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            std::this_thread::yield();
+        }
     }
 
     void D3DContext::Flush()
     {
         _D3D11DeviceContext->Flush();
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Query> D3DContext::InsertEventQuery()
+    {
+        Microsoft::WRL::ComPtr<ID3D11Query> query;
+        if (!_D3D11Device || !_D3D11DeviceContext) {
+            return query;
+        }
+        D3D11_QUERY_DESC desc{};
+        desc.Query = D3D11_QUERY_EVENT;
+        if (FAILED(_D3D11Device->CreateQuery(&desc, &query))) {
+            std::cerr << "D3DContext: CreateQuery(EVENT) failed" << std::endl;
+            return nullptr;
+        }
+        _D3D11DeviceContext->End(query.Get());
+        _D3D11DeviceContext->Flush();
+        return query;
+    }
+
+    bool D3DContext::IsQueryDone(ID3D11Query *query)
+    {
+        if (!query || !_D3D11DeviceContext) {
+            return true;
+        }
+        BOOL done = FALSE;
+        const HRESULT hr = _D3D11DeviceContext->GetData(
+            query, &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (hr == S_FALSE) {
+            return false;
+        }
+        if (FAILED(hr)) {
+            // Device removed/reset: no work on this device can still run.
+            return true;
+        }
+        return done == TRUE;
     }
 
 

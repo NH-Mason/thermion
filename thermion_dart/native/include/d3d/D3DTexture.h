@@ -25,7 +25,22 @@ class DLL_EXPORT D3DTexture {
     ~D3DTexture();
 
     void Flush();
+    // The texture Flutter's compositor (ANGLE, its own D3D11 device) opens.
+    // Only ever written by OUR D3D11 device (CopyResource).
     HANDLE GetTextureHandle();
+
+    // The texture Vulkan imports and blits into. Never opened by ANGLE, so
+    // no Vulkan work ever touches a resource the compositor samples.
+    void SetVulkanSide(Microsoft::WRL::ComPtr<ID3D11Texture2D> texture, HANDLE handle) {
+      _vulkanSideTexture = texture;
+      _vulkanSideHandle = handle;
+    }
+    HANDLE GetVulkanImportHandle() { return _vulkanSideHandle; }
+    ID3D11Texture2D *GetVulkanSideTexture() { return _vulkanSideTexture.Get(); }
+    ID3D11Texture2D *GetPresentationTexture() { return _d3dTexture2D.Get(); }
+
+    // Completion of the last presentation copy (reads the Vulkan side).
+    Microsoft::WRL::ComPtr<ID3D11Query> copyDone;
        
     void SaveToBMP(const char* filename);
 
@@ -43,6 +58,8 @@ class DLL_EXPORT D3DTexture {
     
     Microsoft::WRL::ComPtr<ID3D11Texture2D> _d3dTexture2D;
     HANDLE _d3dTexture2DHandle = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> _vulkanSideTexture;
+    HANDLE _vulkanSideHandle = nullptr;
 
     bool SaveTextureAsBMP(ID3D11Texture2D* texture, const char* filename);
 

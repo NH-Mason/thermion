@@ -62,6 +62,17 @@ namespace thermion::tflutter::windows
   // create cannot make a window unclosable.
   constexpr int kEngineCreateDrainMs = 10000;
 
+  // Resize swap: Flutter fetches of the swapped descriptor before the old
+  // surface may be retired (the first switches ANGLE to the new handle, the
+  // second proves a whole frame was built without the old one), and the
+  // fallback when the texture is not being painted at all.
+  constexpr uint64_t kSwapRetireFetches = 2;
+  constexpr auto kSwapRetireTimeout = std::chrono::milliseconds(1000);
+
+  // Upper bound on the D3D11/Vulkan wait for retired surfaces when a plugin
+  // instance (engine) is destroyed.
+  constexpr int kShutdownGraveyardDrainMs = 500;
+
   // Static member initialization for Dart API DL
   bool ThermionFlutterPlugin::_dartApiInitialized = false;
 
@@ -399,6 +410,13 @@ namespace thermion::tflutter::windows
         }
       }
       _pendingSwaps.clear();
+      ReapSwapRetiredSurfacesLocked(-1, /*forceAll=*/true);
+
+      // Bounded: free what the D3D11 query and Vulkan queue prove idle; keep
+      // the rest for a later blit rather than freeing early or hanging.
+      if (_context) {
+        _context->DrainGraveyard(kShutdownGraveyardDrainMs);
+      }
     }
 
     // Retirement entries are keyed by registrar, so this registrar's are now
@@ -598,9 +616,56 @@ namespace thermion::tflutter::windows
     for (auto handle : uniqueHandles) {
       _context->DestroyRenderingSurface(handle);
     }
+    // Flutter has stopped sampling this texture, so surfaces retired by an
+    // earlier resize no longer need to wait for descriptor fetches.
+    ReapSwapRetiredSurfacesLocked(flutterTextureId, false);
 
     return true;
     
+  }
+
+  void ThermionFlutterPlugin::ReapSwapRetiredSurfacesLocked(int64_t forceId,
+                                                            bool forceAll) {
+    if (_swapRetiredSurfaces.empty() || !_context) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = _swapRetiredSurfaces.begin();
+         it != _swapRetiredSurfaces.end();) {
+      const char *reason = nullptr;
+      uint64_t fetches = 0;
+      if (forceAll) {
+        reason = "teardown";
+      } else if (it->flutterTextureId == forceId) {
+        reason = "unregistered";
+      } else {
+        auto texIt = std::find_if(
+            _flutterTextures.begin(), _flutterTextures.end(), [&](auto &&ft) {
+              return ft->GetFlutterTextureId() == it->flutterTextureId &&
+                     ft->GetOwner() == _textureRegistrar;
+            });
+        if (texIt == _flutterTextures.end()) {
+          reason = "unregistered";
+        } else {
+          fetches = (*texIt)->GetFetchCount() - it->fetchCountAtSwap;
+          if (fetches >= kSwapRetireFetches) {
+            reason = "flutter-fetched";
+          } else if (now - it->retiredAt >= kSwapRetireTimeout) {
+            reason = "timeout";
+          }
+        }
+      }
+      if (!reason) {
+        ++it;
+        continue;
+      }
+      std::cerr << "[WinInterop] resize-retired surface " << it->d3dHandle
+                << " -> graveyard (texture " << it->flutterTextureId
+                << ", reason=" << reason << ", fetches=" << fetches << ")"
+                << std::endl;
+      _context->DestroyRenderingSurface(it->d3dHandle);
+      it = _swapRetiredSurfaces.erase(it);
+    }
   }
 
   void ThermionFlutterPlugin::DestroyTexture(
@@ -701,6 +766,9 @@ namespace thermion::tflutter::windows
       std::lock_guard<std::mutex> contextLock(_contextMutex);
       if (_context)
       {
+        // Reap tick for resize-retired surfaces (non-blocking).
+        ReapSwapRetiredSurfacesLocked(-1, false);
+
         const auto *flutterTextureId = std::get_if<int64_t>(methodCall.arguments());
 
         if (!flutterTextureId || *flutterTextureId == -1)
@@ -757,7 +825,9 @@ namespace thermion::tflutter::windows
             _context->Blit(swap.newD3DHandle);
 
             (*it)->SwapDescriptor(swap.newD3DHandle, swap.width, swap.height);
-            _context->DestroyRenderingSurface(swap.oldD3DHandle);
+            _swapRetiredSurfaces.push_back(SwapRetiredSurface{
+                *flutterTextureId, swap.oldD3DHandle, (*it)->GetFetchCount(),
+                std::chrono::steady_clock::now()});
             _pendingSwaps.erase(swapIt);
           }
         } else {

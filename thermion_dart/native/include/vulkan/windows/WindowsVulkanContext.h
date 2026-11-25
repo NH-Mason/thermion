@@ -32,6 +32,13 @@ namespace thermion::vulkan::windows {
 
         void DestroyRenderingSurface(HANDLE handle);
 
+        // Frees retired surfaces whose D3D11 event query and age floor have
+        // passed and whose Vulkan work has drained, waiting at most
+        // `timeoutMs`. Busy entries are kept, never freed early. Returns true
+        // when the graveyard is empty. For teardown; steady state drains from
+        // Blit.
+        bool DrainGraveyard(int timeoutMs);
+
         // Blits the contents of the paired Vulkan texture to the specified surface handle.
         // Returns true only when the copy was submitted and its fence signalled;
         // false when the frame was skipped or the copy may still be in flight,
