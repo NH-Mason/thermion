@@ -83,6 +83,7 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       if (!pendingReleases.contains(entry)) return
       if (frames <= 0) {
           pendingReleases.remove(entry)
+          Log.d(TAG, "releasing parked surface")
           entry.release()
           return
       }
@@ -295,6 +296,7 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                     // FFIFilamentApp.destroySwapChain, drained) the swapchain.
                     // Stop surface callbacks now; free the buffers later.
                     textureEntry.surfaceProducer?.setCallback(null)
+                    Log.d(TAG, "destroyTexture $textureId: swapchain destroyed, parking surface for $RELEASE_DELAY_FRAMES frames")
                     scheduleRelease(textureEntry)
                     result.success(true)
                 } else {
