@@ -140,6 +140,18 @@ void main(List<String> args) async {
           "features.image_decoding: ${features.imageDecoding})",
         );
       }
+      // The consuming application owns and versions thermion_dart.js/.wasm.
+      // Set `web_vendored: true` under `hooks.user_defines.thermion_dart` in the
+      // consuming app's pubspec.yaml to keep the hook from replacing them: no
+      // local-build copy, no download, no material publishing.
+      final webVendored = input.userDefines["web_vendored"];
+      if (webVendored == true ||
+          webVendored == "true" ||
+          webVendored == 1 ||
+          webVendored == "1") {
+        logger.info('[web_vendored] Preserving artifacts in the consuming app web/ directory');
+        return;
+      }
       final webDir = _findWebDirectory(input, logger);
       if (webDir == null) {
         if (selectedMaterials.isNotEmpty) {
