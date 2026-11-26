@@ -832,6 +832,12 @@ external bool DebugRegistry_setProperty_int(
   int value,
 );
 
+@ffi.Native<ffi.Bool Function(ffi.Int)>(isLeaf: true)
+external bool EngineLifecycle_lock(int timeoutMs);
+
+@ffi.Native<ffi.Void Function()>(isLeaf: true)
+external void EngineLifecycle_unlock();
+
 @ffi.Native<
   ffi.Pointer<TSkybox> Function(
     ffi.Pointer<TEngine>,
@@ -1468,13 +1474,19 @@ external void FilamentAsset_getWireframeJobThread(
 @ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Void>)>(isLeaf: true)
 external int FrameScheduler_initDartApi(ffi.Pointer<ffi.Void> data);
 
-@ffi.Native<ffi.Void Function(ffi.Int)>(isLeaf: true)
+@ffi.Native<ffi.Void Function(FrameTickCallback)>()
+external void FrameScheduler_removeCallback(FrameTickCallback callback);
+
+@ffi.Native<ffi.Void Function(ffi.Int64)>()
+external void FrameScheduler_removePort(int port);
+
+@ffi.Native<ffi.Void Function(ffi.Int)>()
 external void FrameScheduler_setTargetFps(int fps);
 
-@ffi.Native<ffi.Void Function(FrameTickCallback, ffi.Int)>(isLeaf: true)
+@ffi.Native<ffi.Void Function(FrameTickCallback, ffi.Int)>()
 external void FrameScheduler_startWithCallback(FrameTickCallback tickCallback, int targetFps);
 
-@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int)>(isLeaf: true)
+@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int)>()
 external void FrameScheduler_startWithPort(int port, int targetFps);
 
 @ffi.Native<ffi.Int64 Function()>(isLeaf: true)
@@ -1482,6 +1494,15 @@ external int FrameScheduler_steadyClockUs();
 
 @ffi.Native<ffi.Void Function()>()
 external void FrameScheduler_stop();
+
+@ffi.Native<ffi.Void Function()>(isLeaf: true)
+external void FrameTelemetry_disable();
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Uint64>, ffi.Int)>(isLeaf: true)
+external int FrameTelemetry_drain(ffi.Pointer<ffi.Uint64> out, int cap);
+
+@ffi.Native<ffi.Void Function()>(isLeaf: true)
+external void FrameTelemetry_enable();
 
 @ffi.Native<ffi.Pointer<TGltfAnimationManager> Function(ffi.Pointer<TAnimationManager>)>(isLeaf: true)
 external ffi.Pointer<TGltfAnimationManager> GltfAnimationManager_create(
@@ -2040,11 +2061,42 @@ external void Ktx1Reader_createTextureJobThread(
   ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TTexture>)>> onComplete,
 );
 
-@ffi.Native<ffi.Pointer<TTexture> Function(ffi.Pointer<TEngine>, ffi.Pointer<ffi.Uint8>, ffi.Size)>(isLeaf: true)
-external ffi.Pointer<TTexture> Ktx2Reader_createTexture(
+@ffi.Native<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external void Ktx2LoadResult_destroy(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getAlphaMode(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getHardwareSrgbDecode(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getResolvedFormat(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceChannelCount(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceMipCount(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getSourceTransfer(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Pointer<TTexture> Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external ffi.Pointer<TTexture> Ktx2LoadResult_getTexture(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<TKtx2LoadResult>)>(isLeaf: true)
+external int Ktx2LoadResult_getUploadedMipCount(ffi.Pointer<TKtx2LoadResult> tResult);
+
+@ffi.Native<
+  ffi.Pointer<TKtx2LoadResult> Function(ffi.Pointer<TEngine>, ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Int32, ffi.Int32)
+>(isLeaf: true)
+external ffi.Pointer<TKtx2LoadResult> Ktx2Reader_createTexture(
   ffi.Pointer<TEngine> tEngine,
   ffi.Pointer<ffi.Uint8> data,
   int size,
+  int transferFunction,
+  int maxMipLevels,
 );
 
 @ffi.Native<
@@ -2053,7 +2105,9 @@ external ffi.Pointer<TTexture> Ktx2Reader_createTexture(
     ffi.Pointer<TEngine>,
     ffi.Pointer<ffi.Uint8>,
     ffi.Size,
-    ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TTexture>)>>,
+    ffi.Int32,
+    ffi.Int32,
+    ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>>,
   )
 >(isLeaf: true)
 external void Ktx2Reader_createTextureJobThread(
@@ -2061,7 +2115,9 @@ external void Ktx2Reader_createTextureJobThread(
   ffi.Pointer<TEngine> tEngine,
   ffi.Pointer<ffi.Uint8> data,
   int size,
-  ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TTexture>)>> onComplete,
+  int transferFunction,
+  int maxMipLevels,
+  ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<TKtx2LoadResult>)>> onComplete,
 );
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Float>, ffi.Uint8, ffi.Float, ffi.Float)>(isLeaf: true)
@@ -6344,6 +6400,20 @@ sealed class TIntentAction {
 final class TJobThread extends ffi.Opaque {}
 
 final class TKtx1Bundle extends ffi.Opaque {}
+
+sealed class TKtx2AlphaMode {
+  static const KTX2_ALPHA_UNKNOWN = 0;
+  static const KTX2_ALPHA_STRAIGHT = 1;
+  static const KTX2_ALPHA_PREMULTIPLIED = 2;
+}
+
+final class TKtx2LoadResult extends ffi.Opaque {}
+
+sealed class TKtx2TransferFunction {
+  static const KTX2_TRANSFER_UNKNOWN = 0;
+  static const KTX2_TRANSFER_LINEAR = 1;
+  static const KTX2_TRANSFER_SRGB = 2;
+}
 
 final class TLightManager extends ffi.Opaque {}
 

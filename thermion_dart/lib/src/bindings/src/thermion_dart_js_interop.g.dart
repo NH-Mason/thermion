@@ -426,6 +426,8 @@ extension type GeneratedBindings(NativeLibrary _) implements JSObject {
     double value,
   );
   external int _DebugRegistry_setProperty_int(Pointer<TDebugRegistry> tDebugRegistry, Pointer<Char> name, int value);
+  external int _EngineLifecycle_lock(int timeoutMs);
+  external void _EngineLifecycle_unlock();
   external Pointer<TSkybox> _Engine_buildColoredSkybox(
     Pointer<TEngine> tEngine,
     double r,
@@ -730,11 +732,16 @@ extension type GeneratedBindings(NativeLibrary _) implements JSObject {
     Pointer<NativeFunction<void Function(EntityId)>> onComplete,
   );
   external int _FrameScheduler_initDartApi(Pointer<Void> data);
+  external void _FrameScheduler_removeCallback(FrameTickCallback callback);
+  external void _FrameScheduler_removePort(JSBigInt port);
   external void _FrameScheduler_setTargetFps(int fps);
   external void _FrameScheduler_startWithCallback(FrameTickCallback tickCallback, int targetFps);
   external void _FrameScheduler_startWithPort(JSBigInt port, int targetFps);
   external JSBigInt _FrameScheduler_steadyClockUs();
   external void _FrameScheduler_stop();
+  external void _FrameTelemetry_disable();
+  external int _FrameTelemetry_drain(Pointer<Int64> out, int cap);
+  external void _FrameTelemetry_enable();
   external Pointer<TGltfAnimationManager> _GltfAnimationManager_create(Pointer<TAnimationManager> tAnimationManager);
   external void _GltfAnimationManager_createJobThread(
     Pointer<TJobThread> jobThread,
@@ -968,13 +975,30 @@ extension type GeneratedBindings(NativeLibrary _) implements JSObject {
     VoidCallback onTextureUploadComplete,
     Pointer<NativeFunction<void Function(PointerClass<TTexture>)>> onComplete,
   );
-  external Pointer<TTexture> _Ktx2Reader_createTexture(Pointer<TEngine> tEngine, Pointer<Uint8> data, size_t size);
+  external void _Ktx2LoadResult_destroy(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getAlphaMode(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getHardwareSrgbDecode(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getResolvedFormat(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getSourceChannelCount(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getSourceMipCount(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getSourceTransfer(Pointer<TKtx2LoadResult> tResult);
+  external Pointer<TTexture> _Ktx2LoadResult_getTexture(Pointer<TKtx2LoadResult> tResult);
+  external int _Ktx2LoadResult_getUploadedMipCount(Pointer<TKtx2LoadResult> tResult);
+  external Pointer<TKtx2LoadResult> _Ktx2Reader_createTexture(
+    Pointer<TEngine> tEngine,
+    Pointer<Uint8> data,
+    size_t size,
+    int transferFunction,
+    int maxMipLevels,
+  );
   external void _Ktx2Reader_createTextureJobThread(
     Pointer<TJobThread> jobThread,
     Pointer<TEngine> tEngine,
     Pointer<Uint8> data,
     size_t size,
-    Pointer<NativeFunction<void Function(PointerClass<TTexture>)>> onComplete,
+    int transferFunction,
+    int maxMipLevels,
+    Pointer<NativeFunction<void Function(PointerClass<TKtx2LoadResult>)>> onComplete,
   );
   external void _LightManager_computeLogSplits(Pointer<Float32> splitPositions, int cascades, double near, double far);
   external void _LightManager_computePracticalSplits(
@@ -4053,6 +4077,16 @@ bool DebugRegistry_setProperty_int(Pointer<TDebugRegistry> tDebugRegistry, Point
   return result == 1;
 }
 
+bool EngineLifecycle_lock(int timeoutMs) {
+  final result = GeneratedBindings.instance._EngineLifecycle_lock(timeoutMs);
+  return result == 1;
+}
+
+void EngineLifecycle_unlock() {
+  final result = GeneratedBindings.instance._EngineLifecycle_unlock();
+  return result;
+}
+
 Pointer<TSkybox> Engine_buildColoredSkybox(
   Pointer<TEngine> tEngine,
   double r,
@@ -4878,6 +4912,18 @@ int FrameScheduler_initDartApi(Pointer<Void> data) {
   return result;
 }
 
+void FrameScheduler_removeCallback(DartFrameTickCallback callback) {
+  final result = GeneratedBindings.instance._FrameScheduler_removeCallback(
+    callback as Pointer<NativeFunction<FrameTickCallbackFunction>>,
+  );
+  return result;
+}
+
+void FrameScheduler_removePort(BigInt port) {
+  final result = GeneratedBindings.instance._FrameScheduler_removePort(port.toJSBigInt);
+  return result;
+}
+
 void FrameScheduler_setTargetFps(int fps) {
   final result = GeneratedBindings.instance._FrameScheduler_setTargetFps(fps);
   return result;
@@ -4903,6 +4949,21 @@ BigInt FrameScheduler_steadyClockUs() {
 
 void FrameScheduler_stop() {
   final result = GeneratedBindings.instance._FrameScheduler_stop();
+  return result;
+}
+
+void FrameTelemetry_disable() {
+  final result = GeneratedBindings.instance._FrameTelemetry_disable();
+  return result;
+}
+
+int FrameTelemetry_drain(Pointer<Int64> out, int cap) {
+  final result = GeneratedBindings.instance._FrameTelemetry_drain(out, cap);
+  return result;
+}
+
+void FrameTelemetry_enable() {
+  final result = GeneratedBindings.instance._FrameTelemetry_enable();
   return result;
 }
 
@@ -5548,9 +5609,66 @@ void Ktx1Reader_createTextureJobThread(
   return result;
 }
 
-Pointer<TTexture> Ktx2Reader_createTexture(Pointer<TEngine> tEngine, Pointer<Uint8> data, Dartsize_t size) {
-  final result = GeneratedBindings.instance._Ktx2Reader_createTexture(tEngine.cast(), data, size);
+void Ktx2LoadResult_destroy(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_destroy(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getAlphaMode(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getAlphaMode(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getHardwareSrgbDecode(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getHardwareSrgbDecode(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getResolvedFormat(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getResolvedFormat(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getSourceChannelCount(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getSourceChannelCount(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getSourceMipCount(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getSourceMipCount(tResult.cast());
+  return result;
+}
+
+int Ktx2LoadResult_getSourceTransfer(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getSourceTransfer(tResult.cast());
+  return result;
+}
+
+Pointer<TTexture> Ktx2LoadResult_getTexture(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getTexture(tResult.cast());
   return Pointer<TTexture>(result);
+}
+
+int Ktx2LoadResult_getUploadedMipCount(Pointer<TKtx2LoadResult> tResult) {
+  final result = GeneratedBindings.instance._Ktx2LoadResult_getUploadedMipCount(tResult.cast());
+  return result;
+}
+
+Pointer<TKtx2LoadResult> Ktx2Reader_createTexture(
+  Pointer<TEngine> tEngine,
+  Pointer<Uint8> data,
+  Dartsize_t size,
+  int transferFunction,
+  int maxMipLevels,
+) {
+  final result = GeneratedBindings.instance._Ktx2Reader_createTexture(
+    tEngine.cast(),
+    data,
+    size,
+    transferFunction,
+    maxMipLevels,
+  );
+  return Pointer<TKtx2LoadResult>(result);
 }
 
 void Ktx2Reader_createTextureJobThread(
@@ -5558,13 +5676,17 @@ void Ktx2Reader_createTextureJobThread(
   Pointer<TEngine> tEngine,
   Pointer<Uint8> data,
   Dartsize_t size,
-  Pointer<NativeFunction<void Function(Pointer<TTexture>)>> onComplete,
+  int transferFunction,
+  int maxMipLevels,
+  Pointer<NativeFunction<void Function(Pointer<TKtx2LoadResult>)>> onComplete,
 ) {
   final result = GeneratedBindings.instance._Ktx2Reader_createTextureJobThread(
     jobThread.cast(),
     tEngine.cast(),
     data,
     size,
+    transferFunction,
+    maxMipLevels,
     onComplete.cast(),
   );
   return result;
@@ -12232,6 +12354,33 @@ final class TKtx1Bundle extends Struct {
   }
 }
 
+sealed class TKtx2AlphaMode {
+  static const KTX2_ALPHA_UNKNOWN = 0;
+  static const KTX2_ALPHA_STRAIGHT = 1;
+  static const KTX2_ALPHA_PREMULTIPLIED = 2;
+}
+
+extension TKtx2LoadResultExt on Pointer<TKtx2LoadResult> {
+  TKtx2LoadResult toDart() {
+    return TKtx2LoadResult(this);
+  }
+}
+
+final class TKtx2LoadResult extends Struct {
+  Pointer<TKtx2LoadResult> get address => super.address.cast();
+  TKtx2LoadResult(super.address);
+
+  static Pointer<TKtx2LoadResult> stackAlloc() {
+    return Pointer<TKtx2LoadResult>(NativeLibrary.instance.stackAlloc<TKtx2LoadResult>(0));
+  }
+}
+
+sealed class TKtx2TransferFunction {
+  static const KTX2_TRANSFER_UNKNOWN = 0;
+  static const KTX2_TRANSFER_LINEAR = 1;
+  static const KTX2_TRANSFER_SRGB = 2;
+}
+
 extension TLightManagerExt on Pointer<TLightManager> {
   TLightManager toDart() {
     return TLightManager(this);
@@ -14382,6 +14531,9 @@ extension StructAllocator on Struct {
         return ptr.toDart() as T;
       case TKtx1Bundle:
         final ptr = TKtx1Bundle.stackAlloc();
+        return ptr.toDart() as T;
+      case TKtx2LoadResult:
+        final ptr = TKtx2LoadResult.stackAlloc();
         return ptr.toDart() as T;
       case TLightManager:
         final ptr = TLightManager.stackAlloc();
