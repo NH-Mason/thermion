@@ -213,8 +213,8 @@ class TestHelper {
   //   return object;
   // }
 
-  Future setup() async {
-    Logger.root.level = Level.SEVERE;
+  Future setup({Backend? backend, Level logLevel = Level.SEVERE}) async {
+    Logger.root.level = logLevel;
     Logger.root.onRecord.listen((record) {
       print(record.toString());
     });
@@ -222,7 +222,7 @@ class TestHelper {
     await initTestBindings();
 
     await FFIFilamentApp.create(
-      config: FFIFilamentConfig(loadResource: loadResourceBytes, backend: _backend ?? defaultTestBackend),
+      config: FFIFilamentConfig(loadResource: loadResourceBytes, backend: backend ?? _backend ?? defaultTestBackend),
     );
   }
 
