@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.res.AssetManager
 import android.graphics.*
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
@@ -26,6 +29,7 @@ import java.util.*
 class NativeWindowHelper {
     companion object {
       external fun getNativeWindowFromSurface(surface: Surface): Long
+      external fun releaseNativeWindow(window: Long)
     }
 }
 
@@ -34,6 +38,15 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   companion object {
       const val CHANNEL_NAME = "dev.thermion.flutter/event"
       const val TAG = "FilamentPlugin"
+
+      // Frames a destroyed texture's Surface/SurfaceProducer outlive the
+      // Dart-side swapchain destroy. Mirrors the Windows 5-frame delay for
+      // superseded render targets (native_texture_surface_manager.dart): the
+      // GLES driver and Impeller's Vulkan import can still hold fences on
+      // ImageReader buffers for a frame or two after eglDestroySurface.
+      const val RELEASE_DELAY_FRAMES = 5
+      const val RELEASE_MIN_PARK_MS = 150L
+      const val RELEASE_FALLBACK_MS = 1000L
   }
 
   private lateinit var channel : MethodChannel
@@ -45,12 +58,19 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   private data class TextureEntry(
       val surfaceProducer: TextureRegistry.SurfaceProducer?,
       val surfaceTextureEntry: TextureRegistry.SurfaceTextureEntry?,
-      var surface: Surface?
+      var surface: Surface?,
+      var nativeWindow: Long
   ) {
       fun release() {
           surfaceProducer?.setCallback(null)
           surface?.release()
           surface = null
+          // Only the window Dart's descriptor was created with is released, and
+          // only here: descriptor.windowHandle never follows onSurfaceAvailable
+          // rebinds, so freeing it earlier is a use-after-free. The windows from
+          // those rebinds stay leaked (pre-existing).
+          NativeWindowHelper.releaseNativeWindow(nativeWindow)
+          nativeWindow = 0L
           surfaceProducer?.release()
           surfaceTextureEntry?.release()
       }
@@ -59,6 +79,42 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
   var _surface: Surface? = null
   private val textures: MutableMap<Long, TextureEntry> = mutableMapOf()
 
+  // Destroyed on the Dart side but not yet released (see
+  // RELEASE_DELAY_FRAMES); flushed immediately on engine detach. Identity
+  // set: TextureEntry is a data class with mutable fields.
+  private val pendingReleases: MutableSet<TextureEntry> =
+      Collections.newSetFromMap(IdentityHashMap())
+
+  private fun releaseParked(entry: TextureEntry) {
+      if (!pendingReleases.remove(entry)) return
+      Log.d(TAG, "releasing parked surface")
+      entry.release()
+  }
+
+  // Release once RELEASE_DELAY_FRAMES frames AND RELEASE_MIN_PARK_MS have
+  // passed (frames alone are ~8 ms each at 120 Hz).
+  private fun releaseWhenSettled(entry: TextureEntry, parkedAt: Long, frames: Int) {
+      if (!pendingReleases.contains(entry)) return
+      if (frames >= RELEASE_DELAY_FRAMES &&
+          SystemClock.uptimeMillis() - parkedAt >= RELEASE_MIN_PARK_MS) {
+          releaseParked(entry)
+          return
+      }
+      Choreographer.getInstance().postFrameCallback {
+          releaseWhenSettled(entry, parkedAt, frames + 1)
+      }
+  }
+
+  // Frame callbacks never fire while the app is backgrounded, so a timer
+  // releases regardless. Whichever path runs first wins (idempotent).
+  private fun scheduleRelease(entry: TextureEntry) {
+      pendingReleases.add(entry)
+      releaseWhenSettled(entry, SystemClock.uptimeMillis(), 0)
+      Handler(Looper.getMainLooper()).postDelayed({
+          releaseParked(entry)
+      }, RELEASE_FALLBACK_MS)
+  }
+
   private lateinit var activity:Activity
 
   private fun notifyDartBeforeReleasingSurface(
@@ -66,9 +122,12 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
       arguments: Any,
       surface: Surface?
   ) {
+      fun releaseOld() {
+          surface?.release()
+      }
       channel.invokeMethod(method, arguments, object : MethodChannel.Result {
           override fun success(result: Any?) {
-              surface?.release()
+              releaseOld()
           }
 
           override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
@@ -77,12 +136,12 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                   "$method failed before releasing the Android surface: " +
                       "$errorCode ${errorMessage ?: ""}"
               )
-              surface?.release()
+              releaseOld()
           }
 
           override fun notImplemented() {
               Log.e(TAG, "$method was not handled before releasing the Android surface")
-              surface?.release()
+              releaseOld()
           }
       })
   }
@@ -173,7 +232,8 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                 val textureEntry = TextureEntry(
                     producer,
                     surfaceTextureEntry,
-                    surface
+                    surface,
+                    nativeWindowPtr
                 )
                 textures[flutterTextureId] = textureEntry
                 producer?.setCallback(
@@ -237,7 +297,12 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
                 val textureId = (call.arguments as Int).toLong()
                 val textureEntry = textures.remove(textureId)
                 if (textureEntry != null) {
-                    textureEntry.release()
+                    // Dart has destroyed (and, with the flush in
+                    // FFIFilamentApp.destroySwapChain, drained) the swapchain.
+                    // Stop surface callbacks now; free the buffers later.
+                    textureEntry.surfaceProducer?.setCallback(null)
+                    Log.d(TAG, "destroyTexture $textureId: swapchain destroyed, parking surface for $RELEASE_DELAY_FRAMES frames")
+                    scheduleRelease(textureEntry)
                     result.success(true)
                 } else {
                     result.error("TEXTURE_NOT_FOUND", "Texture with id $textureId not found", null)
@@ -280,6 +345,10 @@ class ThermionFlutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
             textureEntry.release()
         }
         textures.clear()
+        for (entry in pendingReleases) {
+            entry.release()
+        }
+        pendingReleases.clear()
   }
 
   

@@ -454,6 +454,15 @@ class FFIFilamentApp extends FilamentApp<Pointer> {
         Engine_destroySwapChainJobThread(jobThreadHandle, engine, swapChain.getNativeHandle(), requestId, callback);
       });
 
+      // engine->destroy(swapChain) only QUEUES the backend's
+      // destroySwapChain (eglDestroySurface on GLES). Callers release the
+      // platform surface as soon as this future completes (Android closes
+      // the SurfaceProducer's ImageReader), so drain the backend again:
+      // otherwise the driver can still own fences on buffers of a reader
+      // that is already gone (Pixel 8 Pro / Mali: SIGABRT in
+      // fence_internal::signal_internal, "destroyed mutex").
+      await flush();
+
       _swapChains.remove(swapChain);
       _logger.info("Destroyed swapchain");
     } finally {

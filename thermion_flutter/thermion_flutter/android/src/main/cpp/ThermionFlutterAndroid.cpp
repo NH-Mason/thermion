@@ -16,6 +16,17 @@ Java_dev_thermion_android_NativeWindowHelper_00024Companion_getNativeWindowFromS
   return (jlong)window;
 }
 
+// Balances the reference ANativeWindow_fromSurface acquired. Call only after
+// every Filament swapchain made from this window has been destroyed (EGL
+// holds its own reference while a surface exists).
+JNIEXPORT void JNICALL
+Java_dev_thermion_android_NativeWindowHelper_00024Companion_releaseNativeWindow(
+    JNIEnv *env, jclass clazz, jlong window) {
+  if (window != 0) {
+    ANativeWindow_release(reinterpret_cast<ANativeWindow *>(window));
+  }
+}
+
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
      void* filamentLib = dlopen("libthermion_dart.so", RTLD_NOW);
@@ -57,6 +68,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
       {"getNativeWindowFromSurface", "(Landroid/view/Surface;)J",
        reinterpret_cast<void *>(
            Java_dev_thermion_android_NativeWindowHelper_00024Companion_getNativeWindowFromSurface)},
+      {"releaseNativeWindow", "(J)V",
+       reinterpret_cast<void *>(
+           Java_dev_thermion_android_NativeWindowHelper_00024Companion_releaseNativeWindow)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));
