@@ -30,8 +30,13 @@ namespace thermion::tflutter::windows
             [&](size_t width, size_t height)
             {
               std::lock_guard<std::mutex> lock(_descriptorMutex);
+              _fetchCount.fetch_add(1);
               return _textureDescriptor.get();
             }));
+  }
+
+  uint64_t FlutterD3DTexture::GetFetchCount() {
+    return _fetchCount.load();
   }
 
   FlutterD3DTexture::~FlutterD3DTexture() {

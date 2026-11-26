@@ -142,6 +142,21 @@ void InstallQueueSerializationShim() {
 
 class WindowsVulkanContext::Impl {
     public:
+        // Graveyard entry: one retired surface. The render target VkImage
+        // ownership is released to Filament (which frees it via
+        // setExternalImage). The D3D-interop textures are deferred here
+        // until the gates in IsGraveyardEntryReady open.
+        static constexpr int GRAVEYARD_DRAIN_FRAMES = 5;
+        static constexpr std::chrono::milliseconds GRAVEYARD_MIN_AGE{250};
+        struct GraveyardEntry {
+            HANDLE handle = nullptr;
+            std::unique_ptr<thermion::vulkan::windows::WindowsVulkanTexture> renderTarget;
+            std::unique_ptr<thermion::vulkan::windows::WindowsVulkanTexture> interop;
+            std::unique_ptr<thermion::windows::d3d::D3DTexture> d3d;
+            Microsoft::WRL::ComPtr<ID3D11Query> d3dIdle;
+            std::chrono::steady_clock::time_point retiredAt;
+            int blits = 0;
+        };
 
         ~Impl() {
             std::cerr << "WindowsVulkanContext destructor " << _vulkanTextures.size() << " Vulkan textures / "
@@ -298,6 +313,10 @@ class WindowsVulkanContext::Impl {
 
             // 2. Create D3D texture and D3D-interop Vulkan texture (for Flutter display)
             auto d3dTexture = _d3dContext->CreateTexture(width, height);
+            if (!d3dTexture) {
+                ERROR("Failed to create D3D textures");
+                return NULL;
+            }
             auto d3dTextureHandle = d3dTexture->GetTextureHandle();
             auto vkTexture = WindowsVulkanTexture::create(device, physicalDevice, width, height, d3dTextureHandle);
 
@@ -319,22 +338,31 @@ class WindowsVulkanContext::Impl {
             // Find index of the D3D texture with this handle and remove from all three vectors
             for (size_t i = 0; i < _d3dTextures.size(); i++) {
                 if (_d3dTextures[i]->GetTextureHandle() == handle) {
+                    GraveyardEntry entry;
+                    entry.handle = handle;
+                    entry.retiredAt = std::chrono::steady_clock::now();
+
                     // Release ownership of the render target VkImage.
                     // Filament imports this image via setExternalImage and
                     // frees it when its texture is destroyed.  If we also
                     // free it, we get a double-free that corrupts the GPU.
                     _renderTargetTextures[i]->releaseOwnership();
-                    _graveyardRT.push_back(std::move(_renderTargetTextures[i]));
+                    entry.renderTarget = std::move(_renderTargetTextures[i]);
                     _renderTargetTextures.erase(_renderTargetTextures.begin() + i);
 
                     // The D3D-interop textures are not imported by Filament,
                     // so we still own them.  Defer their cleanup to avoid
                     // freeing resources while the driver still references them.
-                    _graveyardVk.push_back(std::move(_vulkanTextures[i]));
+                    entry.interop = std::move(_vulkanTextures[i]);
                     _vulkanTextures.erase(_vulkanTextures.begin() + i);
-                    _graveyardD3D.push_back(std::move(_d3dTextures[i]));
+                    entry.d3d = std::move(_d3dTextures[i]);
                     _d3dTextures.erase(_d3dTextures.begin() + i);
-                    _graveyardFrames = 0;
+
+                    // Fence everything this D3D11 device has issued so far
+                    // (texture creation clears included); the shared texture
+                    // and its NT handle are released only once it completes.
+                    entry.d3dIdle = _d3dContext->InsertEventQuery();
+                    _graveyard.push_back(std::move(entry));
                     return;
                 }
             }
@@ -621,26 +649,147 @@ class WindowsVulkanContext::Impl {
             // up. Diagnostic stderr around the drain confirms whether
             // this skip path is being hit and whether `vkDeviceWaitIdle`
             // ever returns when we do invoke it.
-            if (!_graveyardD3D.empty() && !postBlitTimedOut) {
-                _graveyardFrames++;
-                if (_graveyardFrames >= GRAVEYARD_DRAIN_FRAMES) {
+            if (!_graveyard.empty() && !postBlitTimedOut) {
+                for (auto &entry : _graveyard) {
+                    entry.blits++;
+                }
+                if (AnyGraveyardEntryReady(/*requireBlits=*/true)) {
                     std::cerr << "Blit: graveyard drain start (size="
-                              << _graveyardD3D.size()
-                              << ", frames=" << _graveyardFrames << ")"
-                              << std::endl;
+                              << _graveyard.size() << ")" << std::endl;
                     bluevk::vkDeviceWaitIdle(device);
                     std::cerr << "Blit: graveyard drain done (vkDeviceWaitIdle returned)"
                               << std::endl;
-                    _graveyardRT.clear();
-                    _graveyardVk.clear();
-                    _graveyardD3D.clear();
+                    ReleaseReadyGraveyardEntries(/*requireBlits=*/true, "blit");
                 }
-            } else if (!_graveyardD3D.empty() && postBlitTimedOut) {
+            } else if (!_graveyard.empty() && postBlitTimedOut) {
                 std::cerr << "Blit: graveyard drain DEFERRED (postBlit timed out, size="
-                          << _graveyardD3D.size() << ")"
+                          << _graveyard.size() << ")"
                           << std::endl;
             }
             return copyCompleted;
+        }
+
+        // An entry may be freed only when ALL of these hold:
+        //  - it has survived GRAVEYARD_DRAIN_FRAMES completed blits (the
+        //    original frame-count gate; skipped at shutdown, when no more
+        //    blits will come),
+        //  - GRAVEYARD_MIN_AGE has passed since retirement. Flutter's
+        //    compositor (ANGLE) samples the shared texture on ITS OWN D3D11
+        //    device, which we cannot fence from here; a wall-clock floor
+        //    covers its queued work even when blits run fast,
+        //  - the D3D11 event query inserted at retirement has completed on
+        //    our device (GetData, non-blocking).
+        // The Vulkan side (the imported interop image) is covered by the
+        // caller's queue drain before release.
+        bool IsGraveyardEntryReady(GraveyardEntry &entry, bool requireBlits,
+                                   std::chrono::steady_clock::time_point now) {
+            if (requireBlits && entry.blits < GRAVEYARD_DRAIN_FRAMES) {
+                return false;
+            }
+            if (now - entry.retiredAt < GRAVEYARD_MIN_AGE) {
+                return false;
+            }
+            return _d3dContext->IsQueryDone(entry.d3dIdle.Get());
+        }
+
+        bool AnyGraveyardEntryReady(bool requireBlits) {
+            const auto now = std::chrono::steady_clock::now();
+            for (auto &entry : _graveyard) {
+                if (IsGraveyardEntryReady(entry, requireBlits, now)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Caller must already have drained the Vulkan queue.
+        void ReleaseReadyGraveyardEntries(bool requireBlits, const char *reason) {
+            const auto now = std::chrono::steady_clock::now();
+            for (auto it = _graveyard.begin(); it != _graveyard.end();) {
+                if (!IsGraveyardEntryReady(*it, requireBlits, now)) {
+                    ++it;
+                    continue;
+                }
+                const auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - it->retiredAt).count();
+                std::cerr << "[WinInterop] gated release handle=" << it->handle
+                          << " reason=" << reason << " blits=" << it->blits
+                          << " ageMs=" << ageMs << " d3dQuery=done" << std::endl;
+                // Vulkan views of the memory first, then the D3D11 texture
+                // and its NT handle.
+                it->renderTarget.reset();
+                it->interop.reset();
+                it->d3d.reset();
+                it = _graveyard.erase(it);
+            }
+        }
+
+        // Bounded wait for all work already submitted to the blit queue. Uses
+        // a private fence so a timeout never leaves blitFence unsignalled.
+        bool WaitBlitQueueIdle(uint64_t timeoutNs) {
+            VkFenceCreateInfo fenceInfo{};
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            VkFence fence = VK_NULL_HANDLE;
+            if (bluevk::vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+                return false;
+            }
+            if (bluevk::vkQueueSubmit(queue, 0, nullptr, fence) != VK_SUCCESS) {
+                bluevk::vkDestroyFence(device, fence, nullptr);
+                return false;
+            }
+            const VkResult result =
+                bluevk::vkWaitForFences(device, 1, &fence, VK_TRUE, timeoutNs);
+            if (result == VK_SUCCESS) {
+                bluevk::vkDestroyFence(device, fence, nullptr);
+                return true;
+            }
+            // Still pending on the GPU: destroying it now would be invalid.
+            // Leaking one fence on a timed-out shutdown is the safe choice.
+            return false;
+        }
+
+        // Shutdown drain: waits at most `timeoutMs` for the D3D11 queries,
+        // the age floor and the blit queue, then frees what is safe. Entries
+        // that are still busy stay in the graveyard (the context is
+        // process-immortal, so a later blit can still free them) rather than
+        // being freed early or blocking teardown forever.
+        bool DrainGraveyard(int timeoutMs) {
+            if (_graveyard.empty()) {
+                return true;
+            }
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(timeoutMs);
+            std::cerr << "[WinInterop] shutdown graveyard drain start (size="
+                      << _graveyard.size() << ", budgetMs=" << timeoutMs << ")"
+                      << std::endl;
+            while (std::chrono::steady_clock::now() < deadline) {
+                bool allReady = true;
+                const auto now = std::chrono::steady_clock::now();
+                for (auto &entry : _graveyard) {
+                    if (!IsGraveyardEntryReady(entry, /*requireBlits=*/false, now)) {
+                        allReady = false;
+                        break;
+                    }
+                }
+                if (allReady) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            const auto remaining = deadline - std::chrono::steady_clock::now();
+            const auto remainingNs = remaining.count() > 0
+                ? static_cast<uint64_t>(
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count())
+                : 0;
+            if (!WaitBlitQueueIdle(remainingNs)) {
+                std::cerr << "[WinInterop] shutdown graveyard drain: Vulkan queue still busy; "
+                             "keeping " << _graveyard.size() << " entries" << std::endl;
+                return false;
+            }
+            ReleaseReadyGraveyardEntries(/*requireBlits=*/false, "shutdown");
+            std::cerr << "[WinInterop] shutdown graveyard drain done (remaining="
+                      << _graveyard.size() << ")" << std::endl;
+            return _graveyard.empty();
         }
 
         void readPixelsFromImage(
@@ -945,16 +1094,9 @@ class WindowsVulkanContext::Impl {
         std::vector<std::unique_ptr<thermion::vulkan::windows::WindowsVulkanTexture>> _renderTargetTextures;  // Pure Vulkan textures for render targets
         std::set<HANDLE> _pendingFirstBlit;  // Skip first Blit until Filament renders
 
-        // Graveyard: holds old textures after DestroyRenderingSurface.
-        // The render target VkImage ownership is released to Filament
-        // (which frees it via setExternalImage).  The D3D-interop
-        // textures are deferred here and freed after GRAVEYARD_DRAIN_FRAMES
-        // Blit cycles with a vkDeviceWaitIdle fence.
-        static constexpr int GRAVEYARD_DRAIN_FRAMES = 5;
-        std::vector<std::unique_ptr<thermion::vulkan::windows::WindowsVulkanTexture>> _graveyardRT;
-        std::vector<std::unique_ptr<thermion::vulkan::windows::WindowsVulkanTexture>> _graveyardVk;
-        std::vector<std::unique_ptr<thermion::windows::d3d::D3DTexture>> _graveyardD3D;
-        int _graveyardFrames = 0;
+        // Graveyard: holds old textures after DestroyRenderingSurface
+        // (entry type and gates at the top of Impl).
+        std::vector<GraveyardEntry> _graveyard;
 
         // One per Engine that has ever run, owned for the life of the context;
         // `inUse == false` marks a slot whose engine is gone and which the
@@ -983,6 +1125,10 @@ void* WindowsVulkanContext::CreateExternalImageForSurface(HANDLE handle) {
 
 void WindowsVulkanContext::DestroyRenderingSurface(HANDLE handle) {
     pImpl->DestroyRenderingSurface(handle);
+}
+
+bool WindowsVulkanContext::DrainGraveyard(int timeoutMs) {
+    return pImpl->DrainGraveyard(timeoutMs);
 }
 
 void* WindowsVulkanContext::GetSharedContext() {

@@ -189,5 +189,40 @@ namespace thermion::windows::d3d
         _D3D11DeviceContext->Flush();
     }
 
+    Microsoft::WRL::ComPtr<ID3D11Query> D3DContext::InsertEventQuery()
+    {
+        Microsoft::WRL::ComPtr<ID3D11Query> query;
+        if (!_D3D11Device || !_D3D11DeviceContext) {
+            return query;
+        }
+        D3D11_QUERY_DESC desc{};
+        desc.Query = D3D11_QUERY_EVENT;
+        if (FAILED(_D3D11Device->CreateQuery(&desc, &query))) {
+            std::cerr << "D3DContext: CreateQuery(EVENT) failed" << std::endl;
+            return nullptr;
+        }
+        _D3D11DeviceContext->End(query.Get());
+        _D3D11DeviceContext->Flush();
+        return query;
+    }
+
+    bool D3DContext::IsQueryDone(ID3D11Query *query)
+    {
+        if (!query || !_D3D11DeviceContext) {
+            return true;
+        }
+        BOOL done = FALSE;
+        const HRESULT hr = _D3D11DeviceContext->GetData(
+            query, &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (hr == S_FALSE) {
+            return false;
+        }
+        if (FAILED(hr)) {
+            // Device removed/reset: no work on this device can still run.
+            return true;
+        }
+        return done == TRUE;
+    }
+
 
 }

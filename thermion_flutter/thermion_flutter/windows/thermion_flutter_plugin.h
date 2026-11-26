@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "windows/import.h"
 
@@ -98,6 +99,22 @@ public:
       int frameCount = 0;  // Frames since resize; swap fires at 2+
     };
     std::map<int64_t, PendingSwap> _pendingSwaps;
+
+    // The OLD surface of a completed resize swap. Flutter's raster thread may
+    // still hold (or be about to open) its shared handle until it fetches the
+    // swapped descriptor, so it reaches the context graveyard only after
+    // Flutter has fetched the descriptor twice since the swap, the texture is
+    // unregistered, or kSwapRetireTimeout passes with no fetch (not painted).
+    struct SwapRetiredSurface {
+      int64_t flutterTextureId;
+      HANDLE d3dHandle;
+      uint64_t fetchCountAtSwap;
+      std::chrono::steady_clock::time_point retiredAt;
+    };
+    std::vector<SwapRetiredSurface> _swapRetiredSurfaces;
+    // Caller must hold _contextMutex. `forceId` (or every entry, when
+    // `forceAll`) is released without waiting for Flutter fetches.
+    void ReapSwapRetiredSurfacesLocked(int64_t forceId, bool forceAll);
 
     // Frame scheduler (DXGI vsync)
     using FrameCallback = void (*)(uint64_t);

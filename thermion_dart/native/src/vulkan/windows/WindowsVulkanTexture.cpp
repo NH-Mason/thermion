@@ -11,11 +11,14 @@ namespace thermion::vulkan::windows
 // Import utility functions from base vulkan namespace
 using ::thermion::vulkan::findOptimalMemoryType;
 
-    // Constructor for D3D-interop textures (doesn't own memory)
+    // Constructor for D3D-interop textures. Importing a Win32 handle does not
+    // transfer the HANDLE, but the VkDeviceMemory created by the importing
+    // vkAllocateMemory is ours and must be vkFreeMemory'd like any other
+    // allocation; leaving it leaked one D3D11 allocation per surface.
     WindowsVulkanTexture::WindowsVulkanTexture(VkImage image, VkDevice device, VkDeviceMemory imageMemory,
                                  uint32_t width, uint32_t height, HANDLE d3dTextureHandle)
         : BaseVulkanTexture(image, device, imageMemory, width, height),
-          _d3dTextureHandle(d3dTextureHandle), _ownsMemory(false) {}
+          _d3dTextureHandle(d3dTextureHandle), _ownsMemory(true) {}
 
     // Constructor for pure Vulkan textures (owns memory)
     WindowsVulkanTexture::WindowsVulkanTexture(VkImage image, VkDevice device, VkDeviceMemory imageMemory,
@@ -24,8 +27,8 @@ using ::thermion::vulkan::findOptimalMemoryType;
           _d3dTextureHandle(nullptr), _ownsMemory(ownsMemory) {}
 
     WindowsVulkanTexture::~WindowsVulkanTexture() {
-        // Only free memory if we own it (pure Vulkan textures)
-        // D3D-interop textures have memory imported from D3D without ownership transfer
+        // Render targets handed to Filament have released ownership (null
+        // handles), so only interop images and owned pure images free here.
         // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkImportMemoryWin32HandleInfoKHR.html
         destroyResources(_ownsMemory);
     }
