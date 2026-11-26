@@ -65,16 +65,18 @@ void main(List<String> args) async {
       // material C is compiled into the wasm engine via CMakeLists), so
       // link_generated on a web build must fail loudly, not silently no-op.
       checkMaterialLinkingBuildable(buildCodeAssets: input.config.buildCodeAssets, config: config!);
-      final hostArch = await detectHostArchitecture();
+      final hostArch = await detectHostArchitecture() ?? 'x64';
+      final toolsHooks = await _pinnedMaterialToolsHooks(logger, hostArch: hostArch);
       final result = await compileUserMaterials(
         appRoot: Directory(consumingPackageRoot),
         config: config,
         filamentVersion: filamentVersion,
         packageVersion: await readPubspecVersion(Directory(pkgRootFilePath)),
         hostOS: Platform.operatingSystem,
-        hostArch: hostArch ?? 'x64',
+        hostArch: hostArch,
         toolsPin: _loadFilamentPin(packageRoot, logger),
-        download: (url, destination) => _downloadWithRetry(url.toString(), destination, logger),
+        download: toolsHooks.download,
+        verifyTools: toolsHooks.verifyTools,
         onLog: logger.info,
       );
       userMaterials = result;
@@ -164,6 +166,7 @@ void main(List<String> args) async {
       }
       final engineDir = await _resolveWebEngine(input, logger, backend);
       output.dependencies.add(input.packageRoot.resolve('native/web/web.version'));
+      final toolsHooks = await _pinnedMaterialToolsHooks(logger);
       await publishWebMaterials(
         root: Directory.fromUri(input.packageRoot),
         engineDir: engineDir,
@@ -172,7 +175,8 @@ void main(List<String> args) async {
         // The resolved backend also picks the material variant embedded
         // into the staged engine (WGSL/GLSL/both).
         backend: backend,
-        download: (url, destination) => _downloadWithRetry(url.toString(), destination, logger),
+        download: toolsHooks.download,
+        verifyTools: toolsHooks.verifyTools,
         onLog: logger.info,
         addDependency: output.dependencies.add,
       );
@@ -572,12 +576,14 @@ outputDirectory : ${outputDirectory.path}
     };
 
     if (selectedMaterials.isNotEmpty) {
+      final toolsHooks = await _pinnedMaterialToolsHooks(logger);
       final builtIns = await compileBuiltInMaterials(
         root: Directory.fromUri(packageRoot),
         materials: selectedMaterials,
         resgen: true,
         backends: materialBackends,
-        download: (url, destination) => _downloadWithRetry(url.toString(), destination, logger),
+        download: toolsHooks.download,
+        verifyTools: toolsHooks.verifyTools,
         onLog: logger.info,
         addDependency: output.dependencies.add,
       );
@@ -606,10 +612,12 @@ outputDirectory : ${outputDirectory.path}
     // baseColorFactor to opaque white on each instance.
     if (!features.gltf) {
       logger.info("features.gltf: false -> compiling the precompiled unlit fallback material");
+      final toolsHooks = await _pinnedMaterialToolsHooks(logger);
       final fallbackDir = await compileUnlitFallbackMaterial(
         root: Directory.fromUri(packageRoot),
         backends: materialBackends,
-        download: (url, destination) => _downloadWithRetry(url.toString(), destination, logger),
+        download: toolsHooks.download,
+        verifyTools: toolsHooks.verifyTools,
         onLog: logger.info,
         addDependency: output.dependencies.add,
       );
@@ -902,6 +910,148 @@ FilamentPin _loadFilamentPin(Uri packageRoot, Logger logger) {
     logger.warning(warning);
   }
   return pin;
+}
+
+typedef _PinnedMaterialTools = ({
+  String archiveSha256,
+  String matcSha256,
+  String resgenSha256,
+});
+
+/// Filament release tag that [_aoaMaterialToolsPins] corresponds to.
+const String _aoaPinnedMaterialToolsFilamentVersion = 'v1.77.2';
+
+/// Fork-side SHA-256 pins for the host matc/resgen archives and extracted
+/// binaries downloaded by the build hook (#483). Enforced independently of
+/// upstream's filament.libs.json on both fresh downloads (archive + extracted
+/// binaries) and cached binary reuse (before executing matc/resgen).
+const Map<String, _PinnedMaterialTools> _aoaMaterialToolsPins = {
+  'windows': (
+    archiveSha256: 'cf14b524f8e95725ee1427fe658bf16c4fe3c4f885d6b5a3206f6ba87c095f2c',
+    matcSha256: '26f52ddcf74d3a8b7758980445b9ce658d4e880b327988a98920f4620a71a8e9',
+    resgenSha256: '4d39e2129d3dac143a371c90826160954ea670d05249f9e9d090e87a249297d2',
+  ),
+  'linux': (
+    archiveSha256: '86a241f8a724d048b8a8f58a0cb6f7d972f2d47f7bf8986bdc96589ed7f54898',
+    matcSha256: 'ec0c4f84d29304bc039e4c16c0c7a77c35051838d49c43eb558a4caf705b2835',
+    resgenSha256: 'ebf4be612fac4bd5985699e98429dcce3957526df57e0e673395433d542f86de',
+  ),
+  'linux-arm64': (
+    archiveSha256: '47cb55e0e24d82fa3322858608bf2347a66051985dd3e7c9d76424ed0ae56559',
+    matcSha256: 'fee9bdeb599105aba72c8311689aa1a4172967c58a5a414c47a05473666823ee',
+    resgenSha256: '043ae531be9fce017696b2fae3a5c5b9219afdecf299a3d9cee904857d487e2e',
+  ),
+  'macos': (
+    archiveSha256: 'b457a1290c76ee60f3d9228af461c2259b52f6f3bf0db5e48e6196fde863365c',
+    matcSha256: '4b807c5d3d2cd42d580dd1d249fede2e0899db79a5e755307e7f3eedd8de7e6b',
+    resgenSha256: '5c96443fda8ec9124c3d1c571429de628e625fb10cb86a4f2f87391287f6b26c',
+  ),
+};
+
+({String hostPlatform, _PinnedMaterialTools pin}) _resolveAoaMaterialToolsPin({
+  required String hostOS,
+  required String hostArch,
+}) {
+  if (filamentVersion != _aoaPinnedMaterialToolsFilamentVersion) {
+    throw MaterialToolsError(
+      'Material tools SHA-256 pin mismatch: hook/build.dart pins '
+      '$_aoaPinnedMaterialToolsFilamentVersion, but filamentVersion is '
+      '$filamentVersion. Update _aoaMaterialToolsPins in thermion_dart/hook/build.dart.',
+    );
+  }
+  final spec = resolveMaterialToolsSpec(
+    version: filamentVersion,
+    hostOS: hostOS,
+    hostArch: hostArch,
+  );
+  final pin = _aoaMaterialToolsPins[spec.hostPlatform];
+  if (pin == null) {
+    throw MaterialToolsError(
+      'No pinned matc/resgen SHA-256 hash configured in thermion_dart/hook/build.dart '
+      'for host platform "${spec.hostPlatform}" ($hostOS/$hostArch).',
+    );
+  }
+  return (hostPlatform: spec.hostPlatform, pin: pin);
+}
+
+Future<({UrlDownloader download, MaterialToolsVerifier verifyTools})> _pinnedMaterialToolsHooks(
+  Logger logger, {
+  String? hostArch,
+}) async {
+  final resolvedArch = hostArch ?? await detectHostArchitecture() ?? 'x64';
+  final resolved = _resolveAoaMaterialToolsPin(
+    hostOS: Platform.operatingSystem,
+    hostArch: resolvedArch,
+  );
+  return (
+    download: (url, destination) => _downloadPinnedMaterialTools(
+      url: url,
+      destination: destination,
+      hostPlatform: resolved.hostPlatform,
+      pin: resolved.pin,
+      logger: logger,
+    ),
+    verifyTools: (matc, resgen) => _verifyPinnedMaterialToolBinaries(
+      matc: matc,
+      resgen: resgen,
+      hostPlatform: resolved.hostPlatform,
+      pin: resolved.pin,
+      logger: logger,
+    ),
+  );
+}
+
+Future<void> _downloadPinnedMaterialTools({
+  required Uri url,
+  required File destination,
+  required String hostPlatform,
+  required _PinnedMaterialTools pin,
+  required Logger logger,
+}) async {
+  await _downloadWithRetry(url.toString(), destination, logger);
+  final actualSha = sha256.convert(await destination.readAsBytes()).toString();
+  if (actualSha != pin.archiveSha256) {
+    if (destination.existsSync()) {
+      destination.deleteSync();
+    }
+    throw MaterialToolsError(
+      'SHA-256 mismatch for downloaded material tools archive '
+      '(${path.basename(url.path)}) on host $hostPlatform:\n'
+      '  expected: ${pin.archiveSha256}\n'
+      '  actual:   $actualSha\n'
+      '  url:      $url\n'
+      'Refusing to extract unverified matc/resgen binaries.',
+    );
+  }
+  logger.info('Verified material tools archive SHA-256 ($hostPlatform): $actualSha');
+}
+
+Future<void> _verifyPinnedMaterialToolBinaries({
+  required File matc,
+  required File resgen,
+  required String hostPlatform,
+  required _PinnedMaterialTools pin,
+  required Logger logger,
+}) async {
+  final actualMatc = sha256.convert(await matc.readAsBytes()).toString();
+  if (actualMatc != pin.matcSha256) {
+    throw MaterialToolsError(
+      'SHA-256 mismatch for matc binary (${matc.path}) on host $hostPlatform:\n'
+      '  expected: ${pin.matcSha256}\n'
+      '  actual:   $actualMatc\n'
+      'Refusing to execute unverified matc binary.',
+    );
+  }
+  final actualResgen = sha256.convert(await resgen.readAsBytes()).toString();
+  if (actualResgen != pin.resgenSha256) {
+    throw MaterialToolsError(
+      'SHA-256 mismatch for resgen binary (${resgen.path}) on host $hostPlatform:\n'
+      '  expected: ${pin.resgenSha256}\n'
+      '  actual:   $actualResgen\n'
+      'Refusing to execute unverified resgen binary.',
+    );
+  }
+  logger.info('Verified matc/resgen binary SHA-256s ($hostPlatform)');
 }
 
 const _maxRetries = 3;

@@ -42,6 +42,7 @@ Future<Map<BuiltInMaterial, Directory>> compileBuiltInMaterials({
   required bool resgen,
   required void Function(String) onLog,
   UrlDownloader? download,
+  MaterialToolsVerifier? verifyTools,
   void Function(Uri)? addDependency,
 }) async {
   if (materials.isEmpty) return {};
@@ -71,6 +72,7 @@ Future<Map<BuiltInMaterial, Directory>> compileBuiltInMaterials({
       hostArch: hostArch,
       toolsPin: toolsPin,
       download: download,
+      verifyTools: verifyTools,
       onLog: onLog,
     );
     final normalizedCache = path.normalize(cacheDir);
@@ -105,6 +107,7 @@ Future<Directory> compileUnlitFallbackMaterial({
   required List<String> backends,
   required void Function(String) onLog,
   UrlDownloader? download,
+  MaterialToolsVerifier? verifyTools,
   void Function(Uri)? addDependency,
 }) async {
   final packageVersion = await readPubspecVersion(root);
@@ -136,6 +139,7 @@ Future<Directory> compileUnlitFallbackMaterial({
     hostArch: hostArch,
     toolsPin: toolsPin,
     download: download,
+    verifyTools: verifyTools,
     onLog: onLog,
   );
   final normalizedCache = path.normalize(cacheDir);
@@ -163,6 +167,7 @@ Future<void> publishWebMaterials({
   required void Function(String) onLog,
   String backend = defaultWebBackend,
   UrlDownloader? download,
+  MaterialToolsVerifier? verifyTools,
   void Function(Uri)? addDependency,
 }) async {
   final compiled = await compileBuiltInMaterials(
@@ -171,6 +176,7 @@ Future<void> publishWebMaterials({
     root: root,
     materials: materials,
     download: download,
+    verifyTools: verifyTools,
     onLog: onLog,
     addDependency: addDependency,
   );

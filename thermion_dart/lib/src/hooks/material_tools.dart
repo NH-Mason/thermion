@@ -38,6 +38,7 @@
 /// build hook wires it up in hook/build.dart.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -864,6 +865,10 @@ typedef ToolProcess = Future<ToolRunResult> Function(String executable, List<Str
 /// passes its retrying implementation; tests write local fixture zips.
 typedef UrlDownloader = Future<void> Function(Uri url, File destination);
 
+/// Injectable binary verifier called on extracted or cached `matc` and `resgen`
+/// binaries before executing them. Throw [MaterialToolsError] on mismatch.
+typedef MaterialToolsVerifier = FutureOr<void> Function(File matc, File resgen);
+
 Future<ToolRunResult> _defaultRunProcess(String executable, List<String> args) async {
   final result = await Process.run(executable, args);
   return (exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString());
@@ -927,6 +932,7 @@ Future<MaterialTools> ensureMaterialTools({
   required MaterialToolsSpec spec,
   required Directory cacheRoot,
   UrlDownloader? download,
+  MaterialToolsVerifier? verifyTools,
   ToolProcess? runProcess,
   void Function(String message)? onLog,
 }) async {
@@ -942,9 +948,12 @@ Future<MaterialTools> ensureMaterialTools({
         binary(dir, 'resgen').existsSync() &&
         await smokeTestMatc(binary(dir, 'matc'), runProcess: runProcess);
 
-    if (await toolsOk(toolsDir)) {
-      log('Using cached WebGPU-capable matc/resgen from ${toolsDir.path}');
-      return (matc: binary(toolsDir, 'matc'), resgen: binary(toolsDir, 'resgen'), downloaded: false);
+    if (binary(toolsDir, 'matc').existsSync() && binary(toolsDir, 'resgen').existsSync()) {
+      await verifyTools?.call(binary(toolsDir, 'matc'), binary(toolsDir, 'resgen'));
+      if (await smokeTestMatc(binary(toolsDir, 'matc'), runProcess: runProcess)) {
+        log('Using cached WebGPU-capable matc/resgen from ${toolsDir.path}');
+        return (matc: binary(toolsDir, 'matc'), resgen: binary(toolsDir, 'resgen'), downloaded: false);
+      }
     }
 
     // Only installers holding the cache lock own these directories. Remove
@@ -995,6 +1004,7 @@ Future<MaterialTools> ensureMaterialTools({
           'version needs a Build Filament workflow run that ships the shader tools in its release zip.',
         );
       }
+      await verifyTools?.call(binary(installation, 'matc'), binary(installation, 'resgen'));
       await _makeExecutable([binary(installation, 'matc'), binary(installation, 'resgen')]);
       if (!await toolsOk(installation)) {
         throw MaterialToolsError(
@@ -1313,6 +1323,7 @@ Future<UserMaterialsResult> compileUserMaterials({
   String? toolsCacheRoot,
   FilamentPin toolsPin = const {},
   UrlDownloader? download,
+  MaterialToolsVerifier? verifyTools,
   ToolProcess? runProcess,
   void Function(String message)? onLog,
 }) async {
@@ -1389,6 +1400,7 @@ Future<UserMaterialsResult> compileUserMaterials({
         spec: spec,
         cacheRoot: Directory(cacheRoot),
         download: download,
+        verifyTools: verifyTools,
         runProcess: runProcess,
         onLog: onLog,
       );

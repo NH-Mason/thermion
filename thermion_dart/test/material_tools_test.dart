@@ -657,6 +657,55 @@ void main() {
       expect(cache.listSync().whereType<Directory>(), isEmpty);
     });
 
+    test('rejects mismatched extracted matc/resgen binary via verifyTools before execution', () async {
+      final spec = resolveMaterialToolsSpec(version: 'v1.77.2', hostOS: 'linux', hostArch: 'x64');
+      final cache = Directory(p.join(tempDir.path, 'binary_mismatch'));
+      var executed = false;
+      await expectLater(
+        ensureMaterialTools(
+          spec: spec,
+          cacheRoot: cache,
+          download: FakeTools().downloader(),
+          verifyTools: (matc, resgen) {
+            throw MaterialToolsError('SHA-256 mismatch for matc binary (${matc.path})');
+          },
+          runProcess: (exe, args) async {
+            executed = true;
+            return (exitCode: 0, stdout: '', stderr: '');
+          },
+        ),
+        throwsA(isA<MaterialToolsError>().having((e) => e.message, 'message', contains('SHA-256 mismatch for matc'))),
+      );
+      expect(executed, isFalse);
+      expect(Directory(p.join(cache.path, spec.cacheDirName)).existsSync(), isFalse);
+      expect(cache.listSync().whereType<Directory>(), isEmpty);
+    });
+
+    test('rejects mismatched cached matc/resgen binary via verifyTools before smoke test', () async {
+      final spec = resolveMaterialToolsSpec(version: 'v1.77.2', hostOS: 'linux', hostArch: 'x64');
+      final cache = Directory(p.join(tempDir.path, 'cached_binary_mismatch'));
+      final binDir = Directory(p.join(cache.path, spec.cacheDirName, 'bin'))..createSync(recursive: true);
+      File(p.join(binDir.path, 'matc')).writeAsStringSync(workingMatcContent);
+      File(p.join(binDir.path, 'resgen')).writeAsStringSync('tampered-resgen');
+      var executed = false;
+      await expectLater(
+        ensureMaterialTools(
+          spec: spec,
+          cacheRoot: cache,
+          download: FakeTools().downloader(),
+          verifyTools: (matc, resgen) {
+            throw MaterialToolsError('SHA-256 mismatch for resgen binary (${resgen.path})');
+          },
+          runProcess: (exe, args) async {
+            executed = true;
+            return (exitCode: 0, stdout: '', stderr: '');
+          },
+        ),
+        throwsA(isA<MaterialToolsError>().having((e) => e.message, 'message', contains('SHA-256 mismatch for resgen'))),
+      );
+      expect(executed, isFalse);
+    });
+
     test('concurrent apps install once and only publish smoke-tested tools', () async {
       final tools = FakeTools();
       final spec = resolveMaterialToolsSpec(version: 'v1.77.2', hostOS: 'linux', hostArch: 'x64');
