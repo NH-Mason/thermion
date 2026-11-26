@@ -169,7 +169,8 @@ class WindowsVulkanContext::Impl {
             bluevk::bindInstance(instance);
 
             uint32_t queueFamilyIndex = 0;
-            result = createLogicalDevice(instance, &physicalDevice, &device, &queueFamilyIndex);
+            result = createLogicalDevice(instance, &physicalDevice, &device,
+                                        &queueFamilyIndex, &_deviceQueueCount);
             if (result != VK_SUCCESS)
             {
                 std::cout << "[ERROR] Failed to create logical device! Error: " << VkResultToString(result) << std::endl;
@@ -254,7 +255,8 @@ class WindowsVulkanContext::Impl {
                 return;
             }
 
-            _platform = std::make_unique<WindowsVulkanPlatform>();
+            // Platforms are created on demand, one per engine, by
+            // CreatePlatform() — see the note there.
 
             // Command buffer allocation
             VkCommandBufferAllocateInfo cmdBufInfo{};
@@ -834,8 +836,96 @@ class WindowsVulkanContext::Impl {
             return &_sharedContext;
         }
 
+        // ---- Per-engine slots -------------------------------------------
+        //
+        // Two things here are per-ENGINE, not per-process:
+        //
+        // 1. filament::backend::Platform belongs to exactly ONE Engine.
+        //    Engine::create() drives it through createDriver() ->
+        //    createDevice(), which writes the platform's instance/device/queue
+        //    state, and WindowsVulkanPlatform additionally tracks the CURRENT
+        //    swapchain and colour index per engine. Handing one platform to a
+        //    second Engine (a popout window) re-ran device selection on the
+        //    live object underneath the first engine and left the second
+        //    engine's backend spinning on its own thread.
+        //
+        // 2. The VkQueue index inside VulkanSharedContext. VkQueue access is
+        //    externally synchronized; two Engines submitting to queue 0 from
+        //    their own driver threads is a data race that NVIDIA fails with
+        //    VK_ERROR_DEVICE_LOST (-4) — observed as `vkGetQueryPoolResults
+        //    error=-4` / `vkWaitForFences failed: -4` on the second engine's
+        //    first real frame. Queue 1 belongs to the D3D blit worker, so
+        //    engines take 0, then 2, 3, ... (see createLogicalDevice).
+        //
+        // The VkInstance / VkPhysicalDevice / VkDevice stay shared — that is
+        // what VulkanSharedContext is for, and a second VkInstance would
+        // rebind the process-global BlueVK dispatch table underneath the
+        // first context.
+        //
+        // Ownership never leaves the context (Filament does not take it). A
+        // slot released by a dead engine is reused by the next one, which is
+        // what a single engine already does across a hot restart.
+        struct EngineSlot {
+            std::unique_ptr<WindowsVulkanPlatform> platform;
+            filament::backend::VulkanPlatform::VulkanSharedContext sharedContext{};
+            bool inUse = false;
+        };
+
+        filament::backend::Platform *CreatePlatform() {
+            for (auto &slot : _engineSlots) {
+                if (!slot->inUse) {
+                    slot->inUse = true;
+                    return slot->platform.get();
+                }
+            }
+
+            auto slot = std::make_unique<EngineSlot>();
+            slot->platform = std::make_unique<WindowsVulkanPlatform>();
+            slot->sharedContext = _sharedContext;
+            const size_t index = _engineSlots.size();
+            // Every engine renders on queue 0, the queue the blit copies on:
+            // the blit can only be ordered after a render on the same queue.
+            // Concurrent submission is serialized by the queue shim.
+            const uint32_t queueIndex = 0;
+            slot->sharedContext.graphicsQueueIndex = queueIndex;
+            slot->inUse = true;
+            Log("Created Vulkan platform #%zu (one per engine, queue index %u).",
+                index + 1, queueIndex);
+            _engineSlots.push_back(std::move(slot));
+            return _engineSlots.back()->platform.get();
+        }
+
+        // The VulkanSharedContext paired with `platform` — identical to the
+        // process-wide one except for the queue index. Null for a platform
+        // this context did not hand out.
+        void *GetSharedContextForPlatform(filament::backend::Platform *platform) {
+            for (auto &slot : _engineSlots) {
+                if (slot->platform.get() == platform) {
+                    return &slot->sharedContext;
+                }
+            }
+            return nullptr;
+        }
+
+        // Called when the engine that owned `platform` is gone. Idempotent
+        // and tolerant of pointers this context did not hand out.
+        void ReleasePlatform(filament::backend::Platform *platform) {
+            if (!platform) {
+                return;
+            }
+            for (auto &slot : _engineSlots) {
+                if (slot->platform.get() == platform) {
+                    slot->inUse = false;
+                    return;
+                }
+            }
+        }
+
         filament::backend::Platform *GetPlatform() {
-            return _platform.get();
+            if (_engineSlots.empty()) {
+                return CreatePlatform();
+            }
+            return _engineSlots.front()->platform.get();
         }
 
     private:
@@ -866,7 +956,14 @@ class WindowsVulkanContext::Impl {
         std::vector<std::unique_ptr<thermion::windows::d3d::D3DTexture>> _graveyardD3D;
         int _graveyardFrames = 0;
 
-        std::unique_ptr<WindowsVulkanPlatform> _platform;
+        // One per Engine that has ever run, owned for the life of the context;
+        // `inUse == false` marks a slot whose engine is gone and which the
+        // next engine reuses. See CreatePlatform().
+        std::vector<std::unique_ptr<EngineSlot>> _engineSlots;
+
+        // How many queues createLogicalDevice actually got from the driver.
+        // Bounds the per-engine queue assignment above.
+        uint32_t _deviceQueueCount = 1;
 
         filament::backend::VulkanPlatform::VulkanSharedContext _sharedContext{};
 
@@ -910,6 +1007,19 @@ void WindowsVulkanContext::readPixelsFromImage(
 
 filament::backend::Platform *WindowsVulkanContext::GetPlatform() {
     return pImpl->GetPlatform();
+}
+
+filament::backend::Platform *WindowsVulkanContext::CreatePlatform() {
+    return pImpl->CreatePlatform();
+}
+
+void *WindowsVulkanContext::GetSharedContextForPlatform(
+    filament::backend::Platform *platform) {
+    return pImpl->GetSharedContextForPlatform(platform);
+}
+
+void WindowsVulkanContext::ReleasePlatform(filament::backend::Platform *platform) {
+    pImpl->ReleasePlatform(platform);
 }
 
 WindowsVulkanContext::WindowsVulkanContext() : pImpl(std::make_unique<WindowsVulkanContext::Impl>()) {}
